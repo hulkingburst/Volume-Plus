@@ -1,0 +1,293 @@
+/*
+ * Volume+ — audio engine (content script)
+ *
+ * Design principles:
+ *  - The page's DOM and the browser's Fullscreen / pointer / video APIs are
+ *    NEVER touched. We only wrap a media element's *audio output* with a
+ *    Web Audio graph, so fullscreen, Play/Pause, seeking, and site controls
+ *    keep working untouched (this is the bug Volume Master ran into).
+ *  - Volume 0–100% uses the element's native `volume` (0.0–1.0). Above 100%
+ *    or when Bass Boost is on, the element is permanently bound into a
+ *    Web Audio graph (source → lowshelf → gain → safety limiter → speakers).
+ *  - One AudioContext per frame, one graph per media element, all kept local.
+ *  - Dynamically created/replaced/paused media elements are reconciled via a
+ *    (throttled) MutationObserver + play events.
+ *  - Settings are persisted per host so reloads and navigations keep working.
+ */
+(() => {
+  'use strict';
+
+  if (window.__VOLUME_PLUS_ACTIVE__) return;
+  Object.defineProperty(window, '__VOLUME_PLUS_ACTIVE__', { value: true, configurable: false });
+
+  const MAX_GAIN   = 6;      // 600%
+  const BASS_MAX_DB = 12;
+  const BASS_FREQ  = 180;    // lowshelf center (Hz)
+  const GRAPH_CAP  = 32;     // safety cap for pathological pages with tons of <video>
+
+  const clampNum = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+  const SETTINGS = { volume: 1, bass: false, bassDb: 8 };
+
+  let audioCtx  = null;
+  const graphs  = new Map(); // element -> { src, filter, gain, comp }
+  let known     = new Set(); // media elements currently in the DOM
+  let pendingResume = false;
+
+  /* ------------------------------------------------------------------ *
+   * Persistence (per host, local only)
+   * ------------------------------------------------------------------ */
+  async function loadSettings() {
+    try {
+      const { vp } = await chrome.storage.local.get('vp');
+      const host = location.hostname || '_default';
+      const mine = (vp && vp[host]) || null;
+      if (mine) {
+        SETTINGS.volume = clampNum(typeof mine.vol === 'number' ? mine.vol : 1, 0, MAX_GAIN);
+        SETTINGS.bass   = !!mine.bass;
+        SETTINGS.bassDb = clampNum(typeof mine.bassDb === 'number' ? mine.bassDb : 8, 0, BASS_MAX_DB);
+      }
+    } catch (_) {}
+  }
+
+  function persist() {
+    chrome.storage.local
+      .get('vp')
+      .then(({ vp }) => {
+        const all = vp || {};
+        all[location.hostname || '_default'] = {
+          vol: Math.round(SETTINGS.volume * 1000) / 1000,
+          bass: SETTINGS.bass,
+          bassDb: SETTINGS.bassDb,
+        };
+        void chrome.storage.local.set({ vp: all });
+      })
+      .catch(() => {});
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Audio graph
+   * ------------------------------------------------------------------ */
+  function ensureCtx() {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      try {
+        audioCtx = new AC();
+      } catch (_) {
+        return null;
+      }
+    }
+    if (audioCtx.state === 'suspended') {
+      pendingResume = true;
+      void audioCtx.resume().catch(() => {});
+    }
+    return audioCtx;
+  }
+
+  function needsGraph() {
+    return SETTINGS.volume > 1.0001 || SETTINGS.bass;
+  }
+
+  function bind(el) {
+    if (graphs.has(el)) return graphs.get(el);
+    const ctx = ensureCtx();
+    // Never bind into a suspended context: audio would go blank. Wait for a
+    // page gesture instead (native volume keeps working below 100% meanwhile).
+    if (!ctx || ctx.state !== 'running') return null;
+    try {
+      const src    = ctx.createMediaElementSource(el);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowshelf';
+      filter.frequency.setValueAtTime(BASS_FREQ, ctx.currentTime);
+      filter.Q.setValueAtTime(0.7, ctx.currentTime);
+      filter.gain.setValueAtTime(SETTINGS.bass ? SETTINGS.bassDb : 0, ctx.currentTime);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(clampNum(SETTINGS.volume, 0, MAX_GAIN), ctx.currentTime);
+
+      // Literal boost: 100% = unity, 600% = +15.6 dB. Exceeding full scale
+      // clips naturally — that distortion at high boost is expected, and no
+      // limiter/compressor is inserted to soften it.
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      graphs.set(el, { src, filter, gain });
+      try { el.volume = 1; } catch (_) {} // Web Audio owns the level now
+      return graphs.get(el);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  const smooth = (node, value) => {
+    if (audioCtx) node.setTargetAtTime(value, audioCtx.currentTime, 0.018);
+    else node.value = value;
+  };
+
+  function applyTo(el) {
+    const g = graphs.get(el);
+    if (g) {
+      smooth(g.gain.gain, clampNum(SETTINGS.volume, 0, MAX_GAIN));
+      smooth(g.filter.gain, SETTINGS.bass ? SETTINGS.bassDb : 0);
+      try { if (el.volume !== 1) el.volume = 1; } catch (_) {}
+    } else {
+      // Native mode: 0–100%. 0 = mute, and 1–10% stays audible.
+      const v = clampNum(SETTINGS.volume, 0, 1);
+      try { if (Math.abs(el.volume - v) > 0.0005) el.volume = v; } catch (_) {}
+    }
+  }
+
+  function applyAll() {
+    for (const el of known) applyTo(el);
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Reconciliation: keep up with media elements that appear / disappear
+   * ------------------------------------------------------------------ */
+  function rescan() {
+    let els = [];
+    try {
+      els = Array.from(document.querySelectorAll('video, audio'));
+    } catch (_) {}
+
+    const next = new Set(els);
+    known = next;
+
+    if (needsGraph()) {
+      for (const el of known) {
+        if (graphs.has(el) || graphs.size >= GRAPH_CAP) continue;
+        bind(el); // may defer if the context is suspended
+      }
+    }
+
+    // Release graphs for elements that left the DOM when over the cap so a
+    // long-lived tab never accumulates unbounded node graphs.
+    if (graphs.size > GRAPH_CAP) {
+      const drop = [];
+      for (const [el] of graphs) {
+        if (!known.has(el)) drop.push(el);
+        if (graphs.size - drop.length <= GRAPH_CAP) break;
+      }
+      for (const el of drop) dispose(el);
+    }
+
+    applyAll();
+  }
+
+  function dispose(el) {
+    const g = graphs.get(el);
+    if (!g) return;
+    try {
+      g.src.disconnect();
+      g.filter.disconnect();
+      g.gain.disconnect();
+    } catch (_) {}
+    graphs.delete(el);
+  }
+
+  let scanTimer = 0;
+  function scheduleRescan() {
+    if (scanTimer) return;
+    scanTimer = setTimeout(() => { scanTimer = 0; rescan(); }, 350);
+  }
+
+  let mo = null;
+  function touchesMedia(nodeList) {
+    for (const n of nodeList) {
+      if (n.nodeType !== 1) continue;
+      if (n.matches && n.matches('video,audio')) return true;
+      if (n.querySelectorAll && (n.querySelectorAll('video,audio').length > 0)) return true;
+    }
+    return false;
+  }
+
+  function ensureObserver() {
+    if (!document.documentElement) {
+      document.addEventListener('DOMContentLoaded', ensureObserver, { once: true });
+      return;
+    }
+    if (mo) return;
+    mo = new MutationObserver((muts) => {
+      let hit = false;
+      for (const m of muts) {
+        if (m.type !== 'childList') continue;
+        if (touchesMedia(m.addedNodes) || touchesMedia(m.removedNodes)) { hit = true; break; }
+      }
+      if (hit) scheduleRescan();
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  /* Resume a suspended context on any page gesture; never blocks anything. */
+  function onGesture() {
+    if (audioCtx && audioCtx.state === 'suspended') {
+      pendingResume = true;
+      void audioCtx.resume().catch(() => {});
+      rescan();
+    }
+  }
+  document.addEventListener('pointerdown', onGesture, { passive: true });
+  document.addEventListener('keydown', onGesture, { passive: true });
+  document.addEventListener('play', scheduleRescan, { passive: true });
+
+  // Keep native volumes honest (sites occasionally rewrite element.volume)
+  // and retry deferred graph binds once the context is allowed to run.
+  setInterval(() => {
+    if (audioCtx && audioCtx.state === 'suspended') {
+      void audioCtx.resume().catch(() => {});
+    } else if (pendingResume) {
+      pendingResume = false;
+      scheduleRescan();
+    }
+    applyAll();
+  }, 1200);
+
+  /* ------------------------------------------------------------------ *
+   * Messaging: popup -> this frame.
+   * Top frame answers; subframes just apply (keeps protocol clean).
+   * ------------------------------------------------------------------ */
+  function applyIncoming(msg) {
+    if (typeof msg.volume === 'number') SETTINGS.volume = clampNum(msg.volume, 0, MAX_GAIN);
+    if (typeof msg.bass === 'boolean') SETTINGS.bass = msg.bass;
+    if (typeof msg.bassDb === 'number') SETTINGS.bassDb = clampNum(msg.bassDb, 0, BASS_MAX_DB);
+    persist();
+  }
+
+  function snapshot() {
+    return {
+      volume: Math.round(SETTINGS.volume * 1000) / 1000,
+      bass: !!SETTINGS.bass,
+      bassDb: Math.round(SETTINGS.bassDb * 10) / 10,
+      media: known.size,
+      graphs: graphs.size,
+      ctx: audioCtx ? audioCtx.state : 'none',
+    };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type !== 'vp:get' && msg.type !== 'vp:set' && msg.type !== 'vp:sync') return;
+
+    const isTop = window.top === window && !(sender && sender.tab && sender.frameId > 0);
+
+    if (msg.type === 'vp:set') applyIncoming(msg);
+    rescan();
+
+    if (isTop && typeof sendResponse === 'function') {
+      try { sendResponse(snapshot()); } catch (_) {}
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  async function init() {
+    await loadSettings();
+    ensureObserver();
+    rescan();
+    document.addEventListener('DOMContentLoaded', () => rescan(), { once: true });
+    window.addEventListener('pageshow', () => rescan(), { passive: true });
+  }
+
+  void init();
+})();

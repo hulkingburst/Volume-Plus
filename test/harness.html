@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Volume+ · Fullscreen Test Harness</title>
+  <style>
+    body { background: #111; color: #eee; font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 20px; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    p  { color: #bbb; max-width: 760px; margin: 0 0 14px; }
+    video { width: 720px; max-width: 100%; background: #000; border-radius: 10px; display: block; }
+    .controls { margin: 12px 0; }
+    button {
+      background: linear-gradient(135deg, #6c8cff, #8f7bff);
+      color: #fff; border: 0; border-radius: 8px; padding: 10px 16px;
+      cursor: pointer; font-weight: 600; margin-right: 8px;
+    }
+    pre { margin-top: 14px; font-size: 12px; color: #8b93a7;
+          white-space: pre-wrap; font-family: ui-monospace, Menlo, Consolas, monospace;
+          border: 1px solid #262a35; border-radius: 8px; padding: 10px; max-height: 200px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>Volume+ · fullscreen &amp; audio harness</h1>
+  <p>
+    This page builds its own tone video (90&nbsp;Hz bass layer + 440&nbsp;Hz
+    melody) locally and lets you exercise the browser Fullscreen API. Use it to
+    confirm Volume+ keeps working and never breaks fullscreen.
+  </p>
+
+  <video id="v" controls playsinline muted loop></video>
+
+  <div class="controls">
+    <button id="fs" type="button">Enter fullscreen</button>
+    <button id="fsout" type="button">Exit fullscreen</button>
+    <button id="cycle" type="button">Fullscreen &rarr; toggle on/off twice</button>
+  </div>
+
+  <pre id="log">watching for fullscreen / play state…</pre>
+
+  <script>
+    (() => {
+      const logEl = document.getElementById('log');
+      const v = document.getElementById('v');
+      const log = (...a) => { logEl.textContent += a.join(' ') + '\n'; };
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const unmute = () => { if (v.muted) { v.muted = false; } };
+
+      const fs = document.getElementById('fs');
+      const fsout = document.getElementById('fsout');
+      const cycle = document.getElementById('cycle');
+
+      fs.addEventListener('click', async () => {
+        unmute();
+        try {
+          await v.requestFullscreen();
+          log('fullscreen entered:', document.fullscreenElement === v);
+        } catch (e) {
+          log('fullscreen FAILED:', e.message);
+        }
+      });
+
+      fsout.addEventListener('click', async () => {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+          log('fullscreen exited');
+        }
+      });
+
+      cycle.addEventListener('click', async () => {
+        unmute();
+        try {
+          await v.requestFullscreen(); log('enter (1) ok');
+          await sleep(250);
+          await document.exitFullscreen(); log('exit (1) ok');
+          await sleep(250);
+          await v.requestFullscreen(); log('enter (2) ok');
+          await sleep(250);
+          await document.exitFullscreen(); log('exit (2) ok');
+        } catch (e) {
+          log('cycle FAILED:', e.message);
+        }
+      });
+
+      document.addEventListener('fullscreenchange', () => {
+        log('fullscreenchange →', document.fullscreenElement ? 'entered' : 'exited');
+      });
+
+      // ---- Build a self-contained tone video, then loop it ----
+      (async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 640; canvas.height = 360;
+        const g = canvas.getContext('2d');
+
+        const ac = new AudioContext();
+        const dest = ac.createMediaStreamDestination();
+
+        const bass = ac.createOscillator();
+        bass.type = 'sine'; bass.frequency.value = 90;   // deep low-end
+        const gBass = ac.createGain(); gBass.gain.value = 0.5;
+        bass.connect(gBass); gBass.connect(dest);
+
+        const mel = ac.createOscillator();
+        mel.type = 'triangle'; mel.frequency.value = 440;
+        const gMel = ac.createGain(); gMel.gain.value = 0.12;
+        mel.connect(gMel); gMel.connect(dest);
+
+        bass.start(); mel.start();
+
+        const stream = canvas.captureStream(30);
+        stream.addTrack(dest.stream.getAudioTracks()[0]);
+
+        const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+          .find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+        if (!mime) { log('MediaRecorder unsupported — no tone video.'); return; }
+
+        const rec = new MediaRecorder(stream, { mimeType: mime });
+        const chunks = [];
+        rec.ondataavailable = (e) => chunks.push(e.data);
+        rec.onstop = () => {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          v.src = URL.createObjectURL(blob);
+          log('tone video ready (~1.6s, loops)');
+          v.play().catch(() => log('autoplay blocked; press play'));
+        };
+        rec.start();
+        log('recording tone video…');
+
+        const t0 = performance.now();
+        (function draw() {
+          const s = (performance.now() - t0) * 0.02;
+          g.fillStyle = '#0b0e14';
+          g.fillRect(0, 0, 640, 360);
+          for (let i = 0; i < 6; i++) {
+            g.fillStyle = `hsl(${(s * 12 + i * 45) % 360}, 80%, 55%)`;
+            const w = 84 * (1 + 0.25 * Math.sin(s * 0.3 + i));
+            g.fillRect(i * 110 + 8, 110 + Math.sin(s * 0.4 + i * 1.7) * 40, w, 90);
+          }
+          requestAnimationFrame(draw);
+        })();
+
+        setTimeout(() => { rec.stop(); }, 1600);
+      })();
+    })();
+  </script>
+</body>
+</html>

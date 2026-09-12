@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Volume+</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="appbar">
+    <div class="brand">
+      <span class="dot" aria-hidden="true"></span>
+      <span class="name">Volume+</span>
+    </div>
+    <span class="host" id="host"></span>
+  </header>
+
+  <main class="body">
+    <div class="readout">
+      <div class="pct" id="pct">100%</div>
+      <div class="meta" id="meta">normal volume</div>
+    </div>
+
+    <input type="range" id="slider" class="slider" min="0" max="600" step="1" value="100"
+           aria-label="Tab volume" aria-valuetext="100 percent">
+
+    <div class="scale" aria-hidden="true">
+      <span>0</span><span>100%</span><span>600</span>
+    </div>
+
+    <section class="bass">
+      <div class="bass-head">
+        <button class="switch" id="bassBtn" type="button" role="switch"
+                aria-checked="false" aria-label="Bass Boost">
+          <span class="knob"></span>
+        </button>
+        <span class="bass-name">Bass Boost</span>
+        <span class="bass-db" id="bassDb">8 dB</span>
+      </div>
+      <input type="range" id="bassSlider" class="slider bass-slider" min="0" max="12" step="1" value="8"
+             aria-label="Bass boost intensity" disabled>
+      <div class="bass-hint">Low-shelf filter at 180&nbsp;Hz</div>
+    </section>
+
+    <footer class="foot">
+      <button class="link" id="reset" type="button">Reset</button>
+      <span class="eng" id="engine"></span>
+    </footer>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

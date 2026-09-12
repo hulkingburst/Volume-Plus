@@ -1,0 +1,16 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Browser automation runtime artifacts
+*.user-data/
+test/out/
+*.png.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/
