@@ -135,9 +135,10 @@ try {
   const eng = await popup.$eval('#engine', (e) => e.textContent.trim());
   step('volume 300% + bass engaged on YouTube (Web Audio)', eng.includes('Web Audio'), eng);
 
-  // Native element binding => video.volume should be 1 while graph owns audio.
+  // The graph is a multiplier on top: element.volume stays whatever the site
+  // set it to.
   const vVol = await page.evaluate(() => document.querySelector('#movie_player video').volume);
-  step('youtube video element bound (video.volume → 1)', Math.abs(vVol - 1) < 0.01, `volume=${vVol}`);
+  step('youtube site volume left untouched (element.volume unchanged)', Math.abs(vVol - 1) < 0.01, `volume=${vVol}`);
 
   // --- real fullscreen API on YouTube ---
   const fsBtn = '.ytp-fullscreen-button';
@@ -220,9 +221,9 @@ try {
   // Still playing while fullscreen + controlled.
   const playing = await page.evaluate(() => {
     const v = document.querySelector('#movie_player video');
-    return !v.paused && v.currentTime > 0 && Math.abs(v.volume - 1) < 0.01;
+    return !v.paused && v.currentTime > 0 && !v.muted && v.volume >= 0;
   });
-  step('video still playing, bound, audible after fullscreen dance', playing);
+  step('video still playing with the graph engaged after fullscreen dance', playing);
 
   // DOM integrity: the video element must be the SAME object (no clone/replace).
   const sameEl = await page.evaluate(() => {

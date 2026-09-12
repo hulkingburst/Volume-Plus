@@ -6,9 +6,10 @@
  *    NEVER touched. We only wrap a media element's *audio output* with a
  *    Web Audio graph, so fullscreen, Play/Pause, seeking, and site controls
  *    keep working untouched (this is the bug Volume Master ran into).
- *  - Volume 0–100% uses the element's native `volume` (0.0–1.0). Above 100%
- *    or when Bass Boost is on, the element is permanently bound into a
- *    Web Audio graph (source → lowshelf → gain → safety limiter → speakers).
+ *  - Volume is applied ON TOP of the site's own volume: the element's native
+ *    `volume` stays fully under the site's control (its slider / shortcuts /
+ *    mute), and the extension acts as a pure multiplier on top of it through
+ *    a Web Audio graph (source → lowshelf → gain → speakers). 100% = ×1.
  *  - One AudioContext per frame, one graph per media element, all kept local.
  *  - Dynamically created/replaced/paused media elements are reconciled via a
  *    (throttled) MutationObserver + play events.
@@ -86,14 +87,14 @@
   }
 
   function needsGraph() {
-    return SETTINGS.volume > 1.0001 || SETTINGS.bass;
+    return Math.abs(SETTINGS.volume - 1) > 0.0001 || SETTINGS.bass;
   }
 
   function bind(el) {
     if (graphs.has(el)) return graphs.get(el);
     const ctx = ensureCtx();
     // Never bind into a suspended context: audio would go blank. Wait for a
-    // page gesture instead (native volume keeps working below 100% meanwhile).
+    // page gesture instead (the site's own volume keeps working meanwhile).
     if (!ctx || ctx.state !== 'running') return null;
     try {
       const src    = ctx.createMediaElementSource(el);
@@ -104,17 +105,18 @@
       filter.gain.setValueAtTime(SETTINGS.bass ? SETTINGS.bassDb : 0, ctx.currentTime);
 
       const gain = ctx.createGain();
+      // Multiplier ON TOP of the element's own volume: the site keeps control
+      // of element.volume (its slider/shortcuts), we never touch it. 100% here
+      // = ×1 (site volume as-is), 600% = ×6 (+15.6 dB). Exceeding full scale
+      // clips naturally — distortion at the top of the range is expected, and
+      // no limiter/compressor is inserted to soften it.
       gain.gain.setValueAtTime(clampNum(SETTINGS.volume, 0, MAX_GAIN), ctx.currentTime);
 
-      // Literal boost: 100% = unity, 600% = +15.6 dB. Exceeding full scale
-      // clips naturally — that distortion at high boost is expected, and no
-      // limiter/compressor is inserted to soften it.
       src.connect(filter);
       filter.connect(gain);
       gain.connect(ctx.destination);
 
       graphs.set(el, { src, filter, gain });
-      try { el.volume = 1; } catch (_) {} // Web Audio owns the level now
       return graphs.get(el);
     } catch (_) {
       return null;
@@ -129,14 +131,17 @@
   function applyTo(el) {
     const g = graphs.get(el);
     if (g) {
+      // Graph mode: the extension is a pure multiplier on top of the site's
+      // own element.volume, which we never write.
       smooth(g.gain.gain, clampNum(SETTINGS.volume, 0, MAX_GAIN));
       smooth(g.filter.gain, SETTINGS.bass ? SETTINGS.bassDb : 0);
-      try { if (el.volume !== 1) el.volume = 1; } catch (_) {}
-    } else {
-      // Native mode: 0–100%. 0 = mute, and 1–10% stays audible.
-      const v = clampNum(SETTINGS.volume, 0, 1);
-      try { if (Math.abs(el.volume - v) > 0.0005) el.volume = v; } catch (_) {}
+    } else if (SETTINGS.volume <= 0.0001) {
+      // Extension "mute" while the graph can't be engaged (suspended context,
+      // bind failed): fall back to the element's native volume so mute holds.
+      try { if (el.volume !== 0) el.volume = 0; } catch (_) {}
     }
+    // Otherwise the element is unbound at ×1: the site owns element.volume
+    // completely and we leave it untouched.
   }
 
   function applyAll() {
@@ -232,8 +237,8 @@
   document.addEventListener('keydown', onGesture, { passive: true });
   document.addEventListener('play', scheduleRescan, { passive: true });
 
-  // Keep native volumes honest (sites occasionally rewrite element.volume)
-  // and retry deferred graph binds once the context is allowed to run.
+  // Retry deferred graph binds once the context is allowed to run, and keep
+  // graph gains in sync with the current settings.
   setInterval(() => {
     if (audioCtx && audioCtx.state === 'suspended') {
       void audioCtx.resume().catch(() => {});

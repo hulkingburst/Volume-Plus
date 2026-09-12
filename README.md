@@ -8,17 +8,21 @@ Inspired by the gap left by Volume Master (which breaks fullscreen on sites like
 YouTube): Volume+ wraps only the *audio output* of media elements. It never
 clones, wraps, replaces, or intercepts `<video>`, and never touches
 `requestFullscreen()` or site controls — so fullscreen keeps working before,
-during, and after volume/Bass Boost changes.
+during, and after volume/Bass Boost changes. The site's **own** volume slider /
+shortcuts stay fully under the site's control: Volume+ applies a gain multiplier
+**on top**, it never rewrites the element's native volume.
 
 ## Features
 
-- **Volume slider 0%–600%** in 1% steps; `100%` = normal volume. 0 = mute.
+- **Volume slider 0%–600% in 1% steps**; `100%` = ×1 (the site's volume, exactly
+  as the site set it). 0 = mute. Anything ≠ 100% is a real gain applied on top
+  of the site's own volume — the site's slider always stays yours.
 - **Quiet-but-audible low end**: 1–10% uses tiny (non-zero) gain values instead of
   snapping below the browser's normal minimum.
 - **Bass Boost** — a proper `BiquadFilterNode` low-shelf at 180 Hz, with an
   on/off toggle and a 0–12 dB intensity control. Not fake overall-amplification.
-- **Literal 600% boost**: 100% = unity, 600% = +15.6 dB of real gain. No
-  limiter or compressor is inserted, so the boost is exactly as loud as it
+- **Literal boost**: 100% = ×1, 600% = ×6 (+15.6 dB) on top of the site volume.
+  No limiter or compressor is inserted, so the boost is exactly as loud as it
   says on the label. At the extreme end of the range audio can exceed full
   scale and clip — that distortion at 6× is expected and normal.
 - **Robust engine**: dynamically created/replaced media elements are picked up by
@@ -33,19 +37,21 @@ during, and after volume/Bass Boost changes.
 ```
 Popup (popup/)  ──chrome.tabs.sendMessage──►  Content script engine (content/content.js)
                                                │
-├─ Volume ≤ 100%: element.volume (native, 0–1)
-                                                ├─ Volume > 100% or Bass: Web Audio graph
-                                                │    media element → lowshelf → gain
-                                                │    → speakers   (gain = volume, literal)
-                                                └─ settings persisted per host (chrome.storage.local)
+                                               ├─ element volume = the SITE's own volume (never touched)
+                                               ├─ any volume ≠ 100%, or Bass: Web Audio graph
+                                               │    media element → lowshelf → gain
+                                               │    → speakers   (gain = ×0–×6 on top of site volume)
+                                               └─ settings persisted per host (chrome.storage.local)
 ```
 
 - The engine runs in **every frame** (`all_frames`) so embedded players are
   covered too. The top frame answers the popup; subframes just apply.
-- Only the active Web Audio path is ever engaged — below 100% without bass the
-  page stays fully native (zero latency, zero interference).
+- The extension is purely additive: the element's native `volume` is **never
+  rewritten**, so lowering the site's own slider sticks (e.g. 50% site +
+  100% Volume+ = 50%; 50% site + 200% Volume+ = ~100%).
 - An `AudioContext` is created lazily and resumed on a page gesture when needed;
-  while suspended, the native path keeps sound working until the user interacts.
+  while suspended the site's audio plays untouched at its own volume until the
+  user interacts. Only elements that need gain/bass are bound.
 
 ## Load the extension (unpacked)
 
@@ -79,9 +85,10 @@ node automated.mjs
 ```
 
 This launches a real Chromium with the extension loaded, drives the actual popup,
-and asserts: native + Web Audio volume control, Bass Boost, **fullscreen enter /
-exit / re-enter while controlled**, no DOM mutation, dynamic media, and settings
-survival across reloads.
+and asserts: gain control on top of the site volume, Bass Boost, **fullscreen
+enter / exit / re-enter while controlled**, the site's own volume never being
+reset mid-boost, no DOM mutation, dynamic media, and settings survival across
+reloads.
 
 ### Live-site checks
 
@@ -113,9 +120,10 @@ elements a page exposes and whether the engine bound them; pass any URL.
 ## Known limits (by design)
 
 - Sites with DRM-locked audio (e.g. some rentals) can't be routed through Web
-  Audio; those stay native ≤100%.
+  Audio; while their media can't be bound, the site's own volume still works and
+  Volume+ falls back gracefully.
 - Non-CORS cross-origin media can produce silence when routed through Web Audio;
-  below 100% the native path is always used, so normal listening is unaffected.
+  media that can't be bound keeps playing at the site's own volume.
 - The engine targets media elements (`<video>`/`<audio>`); it does not control
   pages that synthesize audio purely inside Web Audio (e.g. game engines).
 - Shadow-DOM-hosted media elements aren't scanned.

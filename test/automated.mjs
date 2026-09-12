@@ -1,9 +1,11 @@
 /*
  * Volume+ automated test
  *
- * Launches a real (headed) Chromium with the extension loaded, opens the
+ * Launch a real (headed) Chromium with the extension loaded, opens the
  * actual popup, and verifies:
- *   1. Native volume control (0–100%).
+ *   1. Extension gain is a multiplier applied ON TOP of the site's own
+ *      element.volume (which is never rewritten): 40% through the graph,
+ *      300% boost, and lowering the site volume mid-boost is preserved.
  *   2. >100% + Bass Boost engages the Web Audio path.
  *   3. FULLSCREEN IS NEVER BROKEN: enter/exit/re-enter fullscreen while the
  *      extension is actively controlling audio, including changing volume
@@ -90,6 +92,15 @@ async function openPopup(browser, extensionId) {
   const page = await browser.newPage();
   await page.goto(`chrome-extension://${extensionId}/popup/popup.html`);
   await page.waitForSelector('#slider');
+  // popup.init() renders DEFAULTS synchronously, then hydrates from the tab's
+  // snapshot asynchronously — wait until that real snapshot has arrived.
+  await page.waitForFunction(
+    () => {
+      const e = document.querySelector('#engine');
+      return e && e.textContent.includes('audio source');
+    },
+    { timeout: 10000 },
+  );
   return page;
 }
 
@@ -156,22 +167,33 @@ async function run(browser, page) {
   const e0 = await popupText(popup, '#engine');
   step('popup reports 100% · native by default', p0 === '100%' && e0.includes('native'), `${p0} | ${e0}`);
 
-  // 2. native sub-100% control
+  // 2. sub-100% is a gain multiplier on top — the site's own volume is untouched
   await setVolume(popup, 40);
   const v40 = await page.evaluate(() => document.querySelector('#v').volume);
-  step('40% applies natively (video.volume = 0.4)', Math.abs(v40 - 0.4) < 0.01, `volume=${v40}`);
+  const e40 = await popupText(popup, '#engine');
+  step('40% multiplies via Web Audio, leaving the site volume untouched',
+    Math.abs(v40 - 1) < 0.01 && e40.includes('Web Audio'), `volume=${v40} | ${e40}`);
 
   // 3. gesture on the page so the AudioContext is allowed to run
   await page.bringToFront();
   await sleep(300);
   await trustedClick(page, '#fsout');
 
-  // 4. >100% must switch to Web Audio
+  // 4. >100% boosts on top of the site volume (never resets element.volume)
   await setVolume(popup, 300);
   const v300 = await page.evaluate(() => document.querySelector('#v').volume);
   const e300 = await popupText(popup, '#engine');
-  step('300% engages Web Audio (video.volume → 1, engine=Web Audio)',
+  step('300% boosts via Web Audio on top of the site volume',
     Math.abs(v300 - 1) < 0.01 && e300.includes('Web Audio'), `volume=${v300} | ${e300}`);
+
+  // 5. THE regression: lowering the SITE volume mid-boost must stick (no reset
+  //    to full blast ~1s later, which the old engine did).
+  await page.evaluate(() => { document.querySelector('#v').volume = 0.4; });
+  await sleep(1800); // well past the 1200 ms reassert interval
+  const siteVolHeld = await page.evaluate(() => document.querySelector('#v').volume);
+  const stillBoosted = await page.evaluate(() => document.querySelector('#v').volume);
+  step('lowering the site volume while boosted is preserved (not reset to max)',
+    Math.abs(siteVolHeld - 0.4) < 0.01, `site volume still ${stillBoosted} with 300% engaged`);
 
   // 5. fullscreen while the extension controls audio
   await enterFullscreen(page);
@@ -196,8 +218,9 @@ async function run(browser, page) {
   await enterFullscreen(page);
   const fs4 = await fullscreenId(page);
   const vRe = await page.evaluate(() => document.querySelector('#v').volume);
+  // Site volume (0.4 from step 5) must survive the fullscreen dance untouched.
   step('re-entering fullscreen right after exit works (Volume Master bug case)',
-    fs4 === 'v' && Math.abs(vRe - 1) < 0.01, `fullscreen=${fs4} | volume=${vRe}`);
+    fs4 === 'v' && Math.abs(vRe - 0.4) < 0.01, `fullscreen=${fs4} | volume=${vRe}`);
   await exitFullscreen(page);
 
   // 8. quiet-but-audible low range while bound
