@@ -114,7 +114,8 @@ elements a page exposes and whether the engine bound them; pass any URL.
 | `test/automated.mjs` | End-to-end browser automation |
 | `test/youtube.mjs` | Live YouTube fullscreen verification |
 | `test/probe.mjs` | Any-site engine/binding probe |
-| `tools/make-icons.ps1` | Regenerates `icons/*.png` |
+| `tools/Volume+_Icon.png` | Master icon art (source of `icons/*.png`) |
+| `tools/make-icons.ps1` | Resizes master art into `icons/*.png` |
 | `icons/` | Extension icons |
 
 ## Known limits (by design)
