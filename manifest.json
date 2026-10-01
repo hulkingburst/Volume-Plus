@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Volume+",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Clean per-tab volume control (0–600%) with a limiter-boosted loudness engine, Bass Boost, 6-band EQ presets and noise reduction. Fullscreen-safe, local-only.",
   "minimum_chrome_version": "102",
   "permissions": ["storage", "scripting"],

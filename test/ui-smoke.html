@@ -414,37 +414,44 @@ body {
 .eq.is-off .slider { opacity: 0.35; pointer-events: none; }
 .eq.is-off .hz { opacity: 0.5; }
 
-/* one-tap preset chips */
-.presets {
+/* preset dropdown — compact, never overlaps the faders */
+.eq-preset-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
   margin-top: 10px;
+  min-height: 26px;
 }
 
-.presets .preset {
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.05);
+.eq-preset-label {
   color: var(--muted);
-  font: inherit;
   font-size: 10.5px;
   font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 99px;
+}
+
+.eq-preset {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.presets .preset:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+.eq-preset:hover { background: rgba(255, 255, 255, 0.1); }
 
-.presets .preset.is-active {
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
-  border-color: transparent;
-  color: #fff;
-}
+.eq-preset:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-.eq.is-off ~ .presets .preset,
-.presets .preset:disabled { opacity: 0.45; pointer-events: none; }
+.eq-preset option { background: var(--panel); color: var(--text); }
+
+.eq-preset-row.is-off .eq-preset { opacity: 0.45; }
+
+.presets .preset:disabled { opacity: 0.45; }
 
 /* ---------------- footer ---------------- */
 
@@ -548,7 +555,10 @@ body {
           <button class="link" id="eqFlatten" type="button">Flatten</button>
         </div>
 
-        <div class="presets" id="eqPresets" role="group" aria-label="Equalizer presets"><!-- chips built by popup.js --></div>
+        <div class="eq-preset-row" id="eqPresetRow">
+          <label class="eq-preset-label" for="eqPreset">Preset</label>
+          <select class="eq-preset" id="eqPreset" aria-label="Equalizer preset"><!-- options built by popup.js --></select>
+        </div>
 
         <div class="eq" id="eq"><!-- bands built by popup.js --></div>
         <div class="card-hint">Drag a fader · tap its dB value to zero the band</div>
@@ -760,7 +770,15 @@ body {
     });
   }
 
+  /* Each push carries a sequence number; the response is only allowed to
+   * repaint the UI if it is the newest one AND no drag is in progress. This
+   * keeps a slow in-flight round-trip from yanking the thumb backwards while
+   * the user is mid-drag (local state is always fresher than the reply). */
+  let pushSeq = 0;
+  let respSeq = 0;
+
   function push() {
+    const seq = ++pushSeq;
     return send({
       type: 'vp:set',
       volume: state.volume,
@@ -770,18 +788,42 @@ body {
       eqOn: state.eqOn,
       noise: { ...state.noise },
     }).then((resp) => {
-      if (resp) reflectSnapshot(resp);
+      if (resp && seq > respSeq && !dragging) {
+        respSeq = seq;
+        reflectSnapshot(resp);
+      }
     }).catch(() => {});
   }
 
+  /* Leading-edge throttle: the FIRST change sends immediately, then at most
+   * one push per PUSH_MS while the drag continues, plus a trailing send that
+   * lands the exact final value. (A plain trailing debounce sent nothing at
+   * all until the drag paused — that was the “doesn’t refresh while I move it”
+   * lag.) The engine smooths each incoming step with setTargetAtTime, so
+   * ~70 ms updates sound continuous. */
+  const PUSH_MS = 70;
+  let lastPushAt = -Infinity;
+
   function queuePush() {
     window.clearTimeout(sendTimer);
-    sendTimer = window.setTimeout(() => { sendTimer = 0; void push(); }, 120);
+    sendTimer = 0;
+    const wait = lastPushAt + PUSH_MS - performance.now();
+    if (wait <= 0) {
+      lastPushAt = performance.now();
+      void push();
+    } else {
+      sendTimer = window.setTimeout(() => {
+        sendTimer = 0;
+        lastPushAt = performance.now();
+        void push();
+      }, wait);
+    }
   }
 
   function flushPush() {
     window.clearTimeout(sendTimer);
     sendTimer = 0;
+    lastPushAt = performance.now();
     void push();
   }
 
@@ -873,44 +915,62 @@ body {
     input.value = String(db);
     dbBtn.textContent = `${db > 0 ? '+' : ''}${db} dB`;
     dbBtn.classList.toggle('is-nonzero', db !== 0);
+    syncPresetSelect();
     queuePush();
   }
 
   buildEq();
 
-  /* Presets: one-tap curve chips. The active chip is marked by comparing the
-   * live curve (after the off-toggle zeros / restores it) against each preset. */
-  const presetBtns = [];
-  function buildPresets() {
-    const wrap = document.getElementById('eqPresets');
-    if (!wrap) return;
-    wrap.textContent = '';
-    presetBtns.length = 0;
-    PRESETS.forEach((p) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'preset';
-      b.textContent = p.name;
-      b.title = `Load the ${p.name} curve`;
-      b.addEventListener('click', () => {
-        state.eq = p.eq.slice();
-        if (!state.eqOn) {
-          state.eqOn = true;   // picking a preset turns the EQ on
-          savedEq = null;
-        }
-        render();
-        flushPush();
-      });
-      wrap.appendChild(b);
-      presetBtns.push({ btn: b, eq: p.eq, name: p.name });
-    });
-  }
-  buildPresets();
+  /* Presets: a compact dropdown above the faders (chips overlapped them).
+   * The select mirrors the live curve: a preset name while the curve matches
+   * exactly, the disabled "Custom" entry after manual fader edits. Picking a
+   * preset also arms a disabled EQ. */
+  const presetSel = document.getElementById('eqPreset');
 
-  function activePresetName() {
+  function buildPresetSelect() {
+    if (!presetSel) return;
+    presetSel.textContent = '';
+    for (const p of PRESETS) {
+      const o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.name;
+      presetSel.appendChild(o);
+    }
+    const custom = document.createElement('option');
+    custom.value = 'custom';
+    custom.textContent = 'Custom';
+    custom.disabled = true;
+    presetSel.appendChild(custom);
+  }
+  buildPresetSelect();
+
+  function activePresetId() {
     if (!state.eqOn) return null;
-    for (const p of presetBtns) if (eqEq(state.eq, p.eq)) return p.name;
+    for (const p of PRESETS) if (eqEq(state.eq, p.eq)) return p.id;
     return null;
+  }
+
+  /* Keep the dropdown in step with the live curve: preset name while the
+   * curve matches exactly, disabled "Custom" after any manual fader edit. */
+  function syncPresetSelect() {
+    if (!presetSel) return;
+    presetSel.value = activePresetId() || 'custom';
+    const row = presetSel.closest('.eq-preset-row');
+    if (row) row.classList.toggle('is-off', !state.eqOn);
+  }
+
+  if (presetSel) {
+    presetSel.addEventListener('change', () => {
+      const p = PRESETS.find((x) => x.id === presetSel.value);
+      if (!p) return;
+      state.eq = p.eq.slice();
+      if (!state.eqOn) {
+        state.eqOn = true;   // picking a preset turns the EQ on
+        savedEq = null;
+      }
+      render();
+      flushPush();
+    });
   }
 
   els.eqBtn.addEventListener('click', () => {
@@ -966,8 +1026,7 @@ body {
       dbBtn.textContent = `${db > 0 ? '+' : ''}${db} dB`;
       dbBtn.classList.toggle('is-nonzero', db !== 0);
     }
-    const active = activePresetName();
-    for (const p of presetBtns) p.btn.classList.toggle('is-active', p.name === active);
+    if (presetSel) syncPresetSelect();
 
     els.noiseBtn.setAttribute('aria-checked', String(state.noise.on));
     els.noiseSlider.disabled = !state.noise.on;
@@ -1056,6 +1115,12 @@ body {
   };
   els.slider.addEventListener('pointerup', endDrag);
   els.slider.addEventListener('pointercancel', endDrag);
+  // Safety net: if a drag is somehow interrupted without a pointerup on the
+  // slider (alt-tab, extension overlay, crashed handler), clear it so normal
+  // input handling resumes on the next event.
+  document.addEventListener('pointerup', endDrag, { passive: true });
+  document.addEventListener('pointercancel', endDrag, { passive: true });
+  window.addEventListener('blur', endDrag);
 
   // Double-click the slider → back to exactly 100 % ("normal").
   els.slider.addEventListener('dblclick', () => setVolumePct(MAGNET, true));
@@ -1265,20 +1330,24 @@ body {
       b3btn.click();
       ok('tapping chip zeroes the band', b3btn.textContent === '0 dB');
 
-      // presets: chips render, one tap loads the curve + marks the chip
-      const chips = d.querySelectorAll('#eqPresets .preset');
-      ok('preset chips rendered', chips.length >= 6, String(chips.length));
-      const vocal = Array.from(chips).find((b) => b.textContent === 'Vocal');
-      vocal.click();
+      // presets: dropdown renders, picking one loads the curve, edits flip it to Custom
+      const sel = d.getElementById('eqPreset');
+      ok('preset dropdown renders 7 curves + Custom', sel && sel.options.length === 8, String(sel ? sel.options.length : 'missing'));
+      sel.value = 'vocal';
+      sel.dispatchEvent(new w.Event('change', { bubbles: true }));
       ok('Vocal preset sets the 1 kHz band to +5 dB',
         d.querySelectorAll('#eq .band .db')[3].textContent === '+5 dB',
         d.querySelectorAll('#eq .band .db')[3].textContent);
       ok('Vocal preset sets the 3.5 kHz band to +4 dB',
         d.querySelectorAll('#eq .band .db')[4].textContent === '+4 dB',
         d.querySelectorAll('#eq .band .db')[4].textContent);
-      ok('active preset chip highlighted', vocal.classList.contains('is-active'));
+      ok('select mirrors the loaded preset', sel.value === 'vocal', sel.value);
+      const b4 = d.querySelectorAll('#eq .band input[type=range]')[3];
+      b4.value = '7';
+      b4.dispatchEvent(new w.Event('input', { bubbles: true }));
+      ok('manual fader edit flips select to Custom', sel.value === 'custom', sel.value);
       d.getElementById('eqFlatten').click();
-      ok('Flatten clears the active preset', !vocal.classList.contains('is-active'));
+      ok('Flatten re-selects Flat', sel.value === 'flat', sel.value);
 
       d.getElementById('eqBtn').click();
       ok('EQ off zeroes chips', Array.from(d.querySelectorAll('#eq .db')).every((b) => b.textContent === '0 dB'));

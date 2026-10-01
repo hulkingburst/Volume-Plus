@@ -24,10 +24,10 @@ shortcuts stay fully under the site's control: Volume+ applies a gain multiplier
   on/off toggle and a 0–12 dB intensity control. Not fake overall-amplification.
 - **Equalizer tab** — six vertical faders (60 Hz, 170 Hz, 350 Hz, 1 kHz,
   3.5 kHz, 10 kHz; shelves on the ends, peaking in between), −12…+12 dB per
-  band, a master on/off toggle, a one-click Flatten, and **one-tap presets**
-  (Flat, Bass Boost, Vocal, Treble, Rock, Pop, Loudness — the active chip is
-  highlighted and Flatten releases it). Tap a band's dB chip to zero just that
-  band.
+  band, a master on/off toggle, a one-click Flatten, and a compact **preset
+  dropdown** (Flat, Bass Boost, Vocal, Treble, Rock, Pop, Loudness) that sits
+  above the faders and flips to "Custom" the moment you edit a band by hand.
+  Tap a band's dB chip to zero just that band.
 - **Reduce noise (Settings tab)** — a three-stage filter chain: a high-pass
   (45–320 Hz) that trims rumble/hum/handling noise, a narrow dynamic band-stop
   parked on the hiss band, and a de-hiss high-shelf (up to −18 dB above
@@ -43,7 +43,10 @@ shortcuts stay fully under the site's control: Volume+ applies a gain multiplier
   ruler), and a magnetic stop makes "close to 100 %" settle exactly on 100, so
   it's never a fight to get back to "normal" after raising it. Double-click the
   slider (or click the 100 label) to jump straight to 100 %. Arrows step 10 %;
-  hold Shift with the arrows for 1 % fine steps.
+  hold Shift with the arrows for 1 % fine steps. Updates are throttled but
+  instant-feeling: the first change sends immediately and drags stream at up to
+  ~14 updates/s, with in-flight replies ignored so the thumb never gets yanked
+  back by a stale round-trip.
 - **Literal boost**: 100% = ×1, 600% = ×6 on top of the site volume. Above
   100 % a soft-knee limiter (plus perceptual pre-gain scaling) converts the
   extra headroom into real loudness; brief peaks may still graze full scale at

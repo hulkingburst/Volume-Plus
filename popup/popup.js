@@ -97,7 +97,15 @@
     });
   }
 
+  /* Each push carries a sequence number; the response is only allowed to
+   * repaint the UI if it is the newest one AND no drag is in progress. This
+   * keeps a slow in-flight round-trip from yanking the thumb backwards while
+   * the user is mid-drag (local state is always fresher than the reply). */
+  let pushSeq = 0;
+  let respSeq = 0;
+
   function push() {
+    const seq = ++pushSeq;
     return send({
       type: 'vp:set',
       volume: state.volume,
@@ -107,18 +115,42 @@
       eqOn: state.eqOn,
       noise: { ...state.noise },
     }).then((resp) => {
-      if (resp) reflectSnapshot(resp);
+      if (resp && seq > respSeq && !dragging) {
+        respSeq = seq;
+        reflectSnapshot(resp);
+      }
     }).catch(() => {});
   }
 
+  /* Leading-edge throttle: the FIRST change sends immediately, then at most
+   * one push per PUSH_MS while the drag continues, plus a trailing send that
+   * lands the exact final value. (A plain trailing debounce sent nothing at
+   * all until the drag paused — that was the “doesn’t refresh while I move it”
+   * lag.) The engine smooths each incoming step with setTargetAtTime, so
+   * ~70 ms updates sound continuous. */
+  const PUSH_MS = 70;
+  let lastPushAt = -Infinity;
+
   function queuePush() {
     window.clearTimeout(sendTimer);
-    sendTimer = window.setTimeout(() => { sendTimer = 0; void push(); }, 120);
+    sendTimer = 0;
+    const wait = lastPushAt + PUSH_MS - performance.now();
+    if (wait <= 0) {
+      lastPushAt = performance.now();
+      void push();
+    } else {
+      sendTimer = window.setTimeout(() => {
+        sendTimer = 0;
+        lastPushAt = performance.now();
+        void push();
+      }, wait);
+    }
   }
 
   function flushPush() {
     window.clearTimeout(sendTimer);
     sendTimer = 0;
+    lastPushAt = performance.now();
     void push();
   }
 
@@ -210,44 +242,62 @@
     input.value = String(db);
     dbBtn.textContent = `${db > 0 ? '+' : ''}${db} dB`;
     dbBtn.classList.toggle('is-nonzero', db !== 0);
+    syncPresetSelect();
     queuePush();
   }
 
   buildEq();
 
-  /* Presets: one-tap curve chips. The active chip is marked by comparing the
-   * live curve (after the off-toggle zeros / restores it) against each preset. */
-  const presetBtns = [];
-  function buildPresets() {
-    const wrap = document.getElementById('eqPresets');
-    if (!wrap) return;
-    wrap.textContent = '';
-    presetBtns.length = 0;
-    PRESETS.forEach((p) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'preset';
-      b.textContent = p.name;
-      b.title = `Load the ${p.name} curve`;
-      b.addEventListener('click', () => {
-        state.eq = p.eq.slice();
-        if (!state.eqOn) {
-          state.eqOn = true;   // picking a preset turns the EQ on
-          savedEq = null;
-        }
-        render();
-        flushPush();
-      });
-      wrap.appendChild(b);
-      presetBtns.push({ btn: b, eq: p.eq, name: p.name });
-    });
-  }
-  buildPresets();
+  /* Presets: a compact dropdown above the faders (chips overlapped them).
+   * The select mirrors the live curve: a preset name while the curve matches
+   * exactly, the disabled "Custom" entry after manual fader edits. Picking a
+   * preset also arms a disabled EQ. */
+  const presetSel = document.getElementById('eqPreset');
 
-  function activePresetName() {
+  function buildPresetSelect() {
+    if (!presetSel) return;
+    presetSel.textContent = '';
+    for (const p of PRESETS) {
+      const o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.name;
+      presetSel.appendChild(o);
+    }
+    const custom = document.createElement('option');
+    custom.value = 'custom';
+    custom.textContent = 'Custom';
+    custom.disabled = true;
+    presetSel.appendChild(custom);
+  }
+  buildPresetSelect();
+
+  function activePresetId() {
     if (!state.eqOn) return null;
-    for (const p of presetBtns) if (eqEq(state.eq, p.eq)) return p.name;
+    for (const p of PRESETS) if (eqEq(state.eq, p.eq)) return p.id;
     return null;
+  }
+
+  /* Keep the dropdown in step with the live curve: preset name while the
+   * curve matches exactly, disabled "Custom" after any manual fader edit. */
+  function syncPresetSelect() {
+    if (!presetSel) return;
+    presetSel.value = activePresetId() || 'custom';
+    const row = presetSel.closest('.eq-preset-row');
+    if (row) row.classList.toggle('is-off', !state.eqOn);
+  }
+
+  if (presetSel) {
+    presetSel.addEventListener('change', () => {
+      const p = PRESETS.find((x) => x.id === presetSel.value);
+      if (!p) return;
+      state.eq = p.eq.slice();
+      if (!state.eqOn) {
+        state.eqOn = true;   // picking a preset turns the EQ on
+        savedEq = null;
+      }
+      render();
+      flushPush();
+    });
   }
 
   els.eqBtn.addEventListener('click', () => {
@@ -303,8 +353,7 @@
       dbBtn.textContent = `${db > 0 ? '+' : ''}${db} dB`;
       dbBtn.classList.toggle('is-nonzero', db !== 0);
     }
-    const active = activePresetName();
-    for (const p of presetBtns) p.btn.classList.toggle('is-active', p.name === active);
+    if (presetSel) syncPresetSelect();
 
     els.noiseBtn.setAttribute('aria-checked', String(state.noise.on));
     els.noiseSlider.disabled = !state.noise.on;
@@ -393,6 +442,12 @@
   };
   els.slider.addEventListener('pointerup', endDrag);
   els.slider.addEventListener('pointercancel', endDrag);
+  // Safety net: if a drag is somehow interrupted without a pointerup on the
+  // slider (alt-tab, extension overlay, crashed handler), clear it so normal
+  // input handling resumes on the next event.
+  document.addEventListener('pointerup', endDrag, { passive: true });
+  document.addEventListener('pointercancel', endDrag, { passive: true });
+  window.addEventListener('blur', endDrag);
 
   // Double-click the slider → back to exactly 100 % ("normal").
   els.slider.addEventListener('dblclick', () => setVolumePct(MAGNET, true));

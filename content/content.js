@@ -107,25 +107,42 @@
     } catch (_) {}
   }
 
+  /* Writes are debounced: a drag fires vp:set up to ~14×/s and each one would
+   * otherwise trigger a read-modify-write of the whole per-host map. 500 ms
+   * after the last change (or 2 s max while a drag keeps producing) the final
+   * state lands once. Runtime messaging stays instant; only disk writes wait. */
+  const PERSIST_DEBOUNCE = 500;
+  const PERSIST_MAX_WAIT = 2000;
+  let persistTimer = 0;
+  let persistFirstAt = 0;
+
   function persist() {
-    chrome.storage.local
-      .get('vp')
-      .then(({ vp }) => {
-        const all = vp || {};
-        all[location.hostname || '_default'] = {
-          vol: Math.round(SETTINGS.volume * 1000) / 1000,
-          bass: SETTINGS.bass,
-          bassDb: SETTINGS.bassDb,
-          eqOn: !!SETTINGS.eqOn,
-          eq: SETTINGS.eqOn ? SETTINGS.eq.map((db) => Math.round(db * 10) / 10) : BANDS.map(() => 0),
-          noise: {
-            on: !!SETTINGS.noise.on,
-            strength: Math.round(SETTINGS.noise.strength),
-          },
-        };
-        void chrome.storage.local.set({ vp: all });
-      })
-      .catch(() => {});
+    if (persistTimer) return;
+    const now = Date.now();
+    if (!persistFirstAt) persistFirstAt = now;
+    const wait = Math.max(0, persistFirstAt + PERSIST_MAX_WAIT - now);
+    persistTimer = setTimeout(() => {
+      persistTimer = 0;
+      persistFirstAt = 0;
+      const all = {};
+      try {
+        chrome.storage.local.get('vp', ({ vp }) => {
+          const store = vp || {};
+          store[location.hostname || '_default'] = {
+            vol: Math.round(SETTINGS.volume * 1000) / 1000,
+            bass: SETTINGS.bass,
+            bassDb: SETTINGS.bassDb,
+            eqOn: !!SETTINGS.eqOn,
+            eq: SETTINGS.eqOn ? SETTINGS.eq.map((db) => Math.round(db * 10) / 10) : BANDS.map(() => 0),
+            noise: {
+              on: !!SETTINGS.noise.on,
+              strength: Math.round(SETTINGS.noise.strength),
+            },
+          };
+          chrome.storage.local.set({ vp: store });
+        });
+      } catch (_) {}
+    }, wait);
   }
 
   /* ------------------------------------------------------------------ *
@@ -394,7 +411,10 @@
   }, 1200);
 
   /* ------------------------------------------------------------------ *
-   * Messaging: popup -> this frame.
+   * Messaging: popup -> this frame. The popup pushes throttled (~70 ms)
+   * updates; audio parameters apply immediately in every frame, and per-host
+   * persistence is debounced (500 ms idle / 2 s max) so a drag never hammers
+   * chrome.storage.
    * Top frame answers; subframes just apply (keeps protocol clean).
    * ------------------------------------------------------------------ */
   function applyIncoming(msg) {

@@ -402,37 +402,44 @@ body {
 .eq.is-off .slider { opacity: 0.35; pointer-events: none; }
 .eq.is-off .hz { opacity: 0.5; }
 
-/* one-tap preset chips */
-.presets {
+/* preset dropdown — compact, never overlaps the faders */
+.eq-preset-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
   margin-top: 10px;
+  min-height: 26px;
 }
 
-.presets .preset {
-  border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.05);
+.eq-preset-label {
   color: var(--muted);
-  font: inherit;
   font-size: 10.5px;
   font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 99px;
+}
+
+.eq-preset {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
-.presets .preset:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+.eq-preset:hover { background: rgba(255, 255, 255, 0.1); }
 
-.presets .preset.is-active {
-  background: linear-gradient(135deg, var(--accent), var(--accent2));
-  border-color: transparent;
-  color: #fff;
-}
+.eq-preset:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-.eq.is-off ~ .presets .preset,
-.presets .preset:disabled { opacity: 0.45; pointer-events: none; }
+.eq-preset option { background: var(--panel); color: var(--text); }
+
+.eq-preset-row.is-off .eq-preset { opacity: 0.45; }
+
+.presets .preset:disabled { opacity: 0.45; }
 
 /* ---------------- footer ---------------- */
 

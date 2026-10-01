@@ -70,7 +70,10 @@
           <button class="link" id="eqFlatten" type="button">Flatten</button>
         </div>
 
-        <div class="presets" id="eqPresets" role="group" aria-label="Equalizer presets"><!-- chips built by popup.js --></div>
+        <div class="eq-preset-row" id="eqPresetRow">
+          <label class="eq-preset-label" for="eqPreset">Preset</label>
+          <select class="eq-preset" id="eqPreset" aria-label="Equalizer preset"><!-- options built by popup.js --></select>
+        </div>
 
         <div class="eq" id="eq"><!-- bands built by popup.js --></div>
         <div class="card-hint">Drag a fader · tap its dB value to zero the band</div>

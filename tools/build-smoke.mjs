@@ -128,20 +128,24 @@ ${js}
       b3btn.click();
       ok('tapping chip zeroes the band', b3btn.textContent === '0 dB');
 
-      // presets: chips render, one tap loads the curve + marks the chip
-      const chips = d.querySelectorAll('#eqPresets .preset');
-      ok('preset chips rendered', chips.length >= 6, String(chips.length));
-      const vocal = Array.from(chips).find((b) => b.textContent === 'Vocal');
-      vocal.click();
+      // presets: dropdown renders, picking one loads the curve, edits flip it to Custom
+      const sel = d.getElementById('eqPreset');
+      ok('preset dropdown renders 7 curves + Custom', sel && sel.options.length === 8, String(sel ? sel.options.length : 'missing'));
+      sel.value = 'vocal';
+      sel.dispatchEvent(new w.Event('change', { bubbles: true }));
       ok('Vocal preset sets the 1 kHz band to +5 dB',
         d.querySelectorAll('#eq .band .db')[3].textContent === '+5 dB',
         d.querySelectorAll('#eq .band .db')[3].textContent);
       ok('Vocal preset sets the 3.5 kHz band to +4 dB',
         d.querySelectorAll('#eq .band .db')[4].textContent === '+4 dB',
         d.querySelectorAll('#eq .band .db')[4].textContent);
-      ok('active preset chip highlighted', vocal.classList.contains('is-active'));
+      ok('select mirrors the loaded preset', sel.value === 'vocal', sel.value);
+      const b4 = d.querySelectorAll('#eq .band input[type=range]')[3];
+      b4.value = '7';
+      b4.dispatchEvent(new w.Event('input', { bubbles: true }));
+      ok('manual fader edit flips select to Custom', sel.value === 'custom', sel.value);
       d.getElementById('eqFlatten').click();
-      ok('Flatten clears the active preset', !vocal.classList.contains('is-active'));
+      ok('Flatten re-selects Flat', sel.value === 'flat', sel.value);
 
       d.getElementById('eqBtn').click();
       ok('EQ off zeroes chips', Array.from(d.querySelectorAll('#eq .db')).every((b) => b.textContent === '0 dB'));
