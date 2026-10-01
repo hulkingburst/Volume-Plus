@@ -12,6 +12,8 @@
  *      and bass while inside fullscreen (the Volume Master repro case).
  *   4. The page DOM is left untouched (no clones/wrappers).
  *   5. Settings survive a page reload (dynamically re-created media).
+ *   6. NEW UI: Equalizer tab (band chip updates, persisted across reload) and
+ *      Settings tab (Reduce noise toggle enables its strength slider).
  *
  * Headed browser is required — headless Edge/Chrome refuse requestFullscreen.
  *
@@ -236,9 +238,34 @@ async function run(browser, page) {
   step('no DOM mutation / clones / wrappers',
     after.children === baseline.children && after.parent === baseline.parent, JSON.stringify(after));
 
+  // 9b. Equalizer tab: move a band, chip must update
+  await popup.evaluate(() => { document.getElementById('tab-eq').click(); });
+  await popup.evaluate(() => {
+    const b = document.querySelectorAll('#eq .band input[type=range]')[1];
+    b.value = '6';
+    b.dispatchEvent(new Event('input', { bubbles: true }));
+    b.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await sleep(700);
+  const eqChip = await popup.$eval('#eq .band:nth-child(2) .db', (el) => el.textContent.trim());
+  step('EQ band 170 Hz set to +6 dB via the Equalizer tab', eqChip === '+6 dB', eqChip);
+
+  // 9c. Settings tab: Reduce noise toggle arms its strength slider
+  await popup.evaluate(() => { document.getElementById('tab-settings').click(); });
+  await popup.evaluate(() => { document.getElementById('noiseBtn').click(); });
+  await sleep(700);
+  const noiseOn = await popup.$eval('#noiseBtn', (b) => b.getAttribute('aria-checked'));
+  const noiseArmed = await popup.$eval('#noiseSlider', (s) => !s.disabled);
+  step('Reduce noise toggle enables the strength slider', noiseOn === 'true' && noiseArmed, `checked=${noiseOn}`);
+
   // 10. persistence: final state survives a reload & dynamically rebuilt media
   await setVolume(popup, 150);
   await setBass(popup, { enabled: true, db: 10 });
+  await popup.evaluate(() => {
+    document.getElementById('noiseSlider').value = '65';
+    document.getElementById('noiseSlider').dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('noiseSlider').dispatchEvent(new Event('change', { bubbles: true }));
+  });
   await sleep(200);
   await page.bringToFront();
   await sleep(300);
@@ -255,6 +282,21 @@ async function run(browser, page) {
   step('settings persist across reload (150%, bass on, 10 dB, Web Audio)',
     pAfter === '150%' && bAfter === 'true' && dbAfter === '10 dB' && eAfter.includes('Web Audio'),
     `${pAfter} | ${bAfter} | ${dbAfter} | ${eAfter}`);
+
+  const eqAfter = await popup2.evaluate(() => {
+    document.getElementById('tab-eq').click();
+    return document.querySelector('#eq .band:nth-child(2) .db').textContent.trim();
+  });
+  const noiseAfter = await popup2.evaluate(() => {
+    document.getElementById('tab-settings').click();
+    return {
+      checked: document.getElementById('noiseBtn').getAttribute('aria-checked'),
+      strength: document.getElementById('noiseVal').textContent,
+    };
+  });
+  step('EQ curve + noise setting persist across reload (+6 dB, on, 65%)',
+    eqAfter === '+6 dB' && noiseAfter.checked === 'true' && noiseAfter.strength === '65%',
+    `${eqAfter} | ${noiseAfter.checked} | ${noiseAfter.strength}`);
   await popup2.close();
 }
 

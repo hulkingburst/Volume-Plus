@@ -9,8 +9,11 @@
  *  - Volume is applied ON TOP of the site's own volume: the element's native
  *    `volume` stays fully under the site's control (its slider / shortcuts /
  *    mute), and the extension acts as a pure multiplier on top of it through
- *    a Web Audio graph (source → lowshelf → gain → speakers). 100% = ×1.
+ *    a Web Audio graph. 100% = ×1.
  *  - One AudioContext per frame, one graph per media element, all kept local.
+ *    Graph: source → highpass(noise) → lowshelf(noise hiss) → bass lowshelf
+ *    → EQ × 6 → gain → speakers. Noise/EQ stages sit at neutral values when
+ *    off, so they cost nothing audible.
  *  - Dynamically created/replaced/paused media elements are reconciled via a
  *    (throttled) MutationObserver + play events.
  *  - Settings are persisted per host so reloads and navigations keep working.
@@ -21,32 +24,76 @@
   if (window.__VOLUME_PLUS_ACTIVE__) return;
   Object.defineProperty(window, '__VOLUME_PLUS_ACTIVE__', { value: true, configurable: false });
 
-  const MAX_GAIN   = 6;      // 600%
-  const BASS_MAX_DB = 12;
-  const BASS_FREQ  = 180;    // lowshelf center (Hz)
-  const GRAPH_CAP  = 32;     // safety cap for pathological pages with tons of <video>
+  const CFG = (typeof VP_AUDIO !== 'undefined' && VP_AUDIO) || {
+    MAX_GAIN: 6, BASS_MAX_DB: 12, BASS_FREQ: 180, EQ_MAX_DB: 12,
+    BANDS: [
+      { freq: 60, type: 'lowshelf', label: '60', unit: 'Hz' },
+      { freq: 170, type: 'peaking', label: '170', unit: 'Hz', q: 1.1 },
+      { freq: 350, type: 'peaking', label: '350', unit: 'Hz', q: 1.1 },
+      { freq: 1000, type: 'peaking', label: '1', unit: 'kHz', q: 1.1 },
+      { freq: 3500, type: 'peaking', label: '3.5', unit: 'kHz', q: 1.1 },
+      { freq: 10000, type: 'highshelf', label: '10', unit: 'kHz' },
+    ],
+    NOISE: { DEF: 50, HP_MIN: 45, HP_MAX: 180, HISS_FREQ: 6500, HISS_MAX_DB: 9 },
+  };
+
+  const MAX_GAIN    = CFG.MAX_GAIN;    // 600 %
+  const BASS_MAX_DB = CFG.BASS_MAX_DB;
+  const BASS_FREQ   = CFG.BASS_FREQ;
+  const BANDS       = CFG.BANDS;
+  const NOISE       = CFG.NOISE;
+  const GRAPH_CAP   = 32;              // safety cap for pathological pages
 
   const clampNum = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-  const SETTINGS = { volume: 1, bass: false, bassDb: 8 };
+  const SETTINGS = {
+    volume: 1,
+    bass: false,
+    bassDb: 8,
+    eqOn: true,
+    eq: BANDS.map(() => 0),               // dB per band, −12 … +12
+    noise: { on: false, strength: NOISE.DEF },
+  };
 
   let audioCtx  = null;
-  const graphs  = new Map(); // element -> { src, filter, gain, comp }
+  const graphs  = new Map(); // element -> { src, hp, hiss, filter, eq[], gain }
   let known     = new Set(); // media elements currently in the DOM
   let pendingResume = false;
 
   /* ------------------------------------------------------------------ *
    * Persistence (per host, local only)
    * ------------------------------------------------------------------ */
+  function sanitize(mine) {
+    if (!mine || typeof mine !== 'object') return null;
+    const eq = Array.isArray(mine.eq)
+      ? BANDS.map((_, i) => clampNum(Number(mine.eq[i]) || 0, -CFG.EQ_MAX_DB, CFG.EQ_MAX_DB))
+      : BANDS.map(() => 0);
+    const ns = (mine.noise && typeof mine.noise === 'object') ? mine.noise : {};
+    return {
+      vol:    clampNum(typeof mine.vol === 'number' ? mine.vol : 1, 0, MAX_GAIN),
+      bass:   !!mine.bass,
+      bassDb: clampNum(typeof mine.bassDb === 'number' ? mine.bassDb : 8, 0, BASS_MAX_DB),
+      eqOn: mine.eqOn !== false,
+      eq,
+      noise: {
+        on: !!ns.on,
+        strength: clampNum(typeof ns.strength === 'number' ? ns.strength : NOISE.DEF, 0, 100),
+      },
+    };
+  }
+
   async function loadSettings() {
     try {
       const { vp } = await chrome.storage.local.get('vp');
       const host = location.hostname || '_default';
-      const mine = (vp && vp[host]) || null;
+      const mine = sanitize(vp && vp[host]);
       if (mine) {
-        SETTINGS.volume = clampNum(typeof mine.vol === 'number' ? mine.vol : 1, 0, MAX_GAIN);
-        SETTINGS.bass   = !!mine.bass;
-        SETTINGS.bassDb = clampNum(typeof mine.bassDb === 'number' ? mine.bassDb : 8, 0, BASS_MAX_DB);
+        SETTINGS.volume = mine.vol;
+        SETTINGS.bass = mine.bass;
+        SETTINGS.bassDb = mine.bassDb;
+        SETTINGS.eqOn = mine.eqOn;
+        SETTINGS.eq = mine.eq;
+        SETTINGS.noise = mine.noise;
       }
     } catch (_) {}
   }
@@ -60,6 +107,12 @@
           vol: Math.round(SETTINGS.volume * 1000) / 1000,
           bass: SETTINGS.bass,
           bassDb: SETTINGS.bassDb,
+          eqOn: !!SETTINGS.eqOn,
+          eq: SETTINGS.eqOn ? SETTINGS.eq.map((db) => Math.round(db * 10) / 10) : BANDS.map(() => 0),
+          noise: {
+            on: !!SETTINGS.noise.on,
+            strength: Math.round(SETTINGS.noise.strength),
+          },
         };
         void chrome.storage.local.set({ vp: all });
       })
@@ -87,7 +140,12 @@
   }
 
   function needsGraph() {
-    return Math.abs(SETTINGS.volume - 1) > 0.0001 || SETTINGS.bass;
+    return (
+      Math.abs(SETTINGS.volume - 1) > 0.0001 ||
+      SETTINGS.bass ||
+      (SETTINGS.eqOn && SETTINGS.eq.some((db) => Math.abs(db) > 0.01)) ||
+      SETTINGS.noise.on
+    );
   }
 
   function bind(el) {
@@ -97,27 +155,53 @@
     // page gesture instead (the site's own volume keeps working meanwhile).
     if (!ctx || ctx.state !== 'running') return null;
     try {
-      const src    = ctx.createMediaElementSource(el);
+      const src = ctx.createMediaElementSource(el);
+
+      // Noise reduction stage 1: high-pass (rumble, hum, handling noise).
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.Q.value = 0.707;
+
+      // Noise reduction stage 2: high-shelf cut (hiss, sibilance).
+      const hiss = ctx.createBiquadFilter();
+      hiss.type = 'highshelf';
+
+      // Bass Boost: low-shelf at 180 Hz.
       const filter = ctx.createBiquadFilter();
       filter.type = 'lowshelf';
       filter.frequency.setValueAtTime(BASS_FREQ, ctx.currentTime);
       filter.Q.setValueAtTime(0.7, ctx.currentTime);
       filter.gain.setValueAtTime(SETTINGS.bass ? SETTINGS.bassDb : 0, ctx.currentTime);
 
-      const gain = ctx.createGain();
+      // Graphic equalizer: one biquad per band.
+      const eq = BANDS.map((b) => {
+        const f = ctx.createBiquadFilter();
+        f.type = b.type;
+        f.frequency.setValueAtTime(b.freq, ctx.currentTime);
+        if (b.q) f.Q.setValueAtTime(b.q, ctx.currentTime);
+        f.gain.setValueAtTime(0, ctx.currentTime);
+        return f;
+      });
+
       // Multiplier ON TOP of the element's own volume: the site keeps control
       // of element.volume (its slider/shortcuts), we never touch it. 100% here
       // = ×1 (site volume as-is), 600% = ×6 (+15.6 dB). Exceeding full scale
       // clips naturally — distortion at the top of the range is expected, and
       // no limiter/compressor is inserted to soften it.
+      const gain = ctx.createGain();
       gain.gain.setValueAtTime(clampNum(SETTINGS.volume, 0, MAX_GAIN), ctx.currentTime);
 
-      src.connect(filter);
-      filter.connect(gain);
+      let prev = src;
+      for (const node of [hp, hiss, filter, ...eq, gain]) {
+        prev.connect(node);
+        prev = node;
+      }
       gain.connect(ctx.destination);
 
-      graphs.set(el, { src, filter, gain });
-      return graphs.get(el);
+      const graph = { src, hp, hiss, filter, eq, gain };
+      graphs.set(el, graph);
+      applyTo(el);
+      return graph;
     } catch (_) {
       return null;
     }
@@ -130,18 +214,30 @@
 
   function applyTo(el) {
     const g = graphs.get(el);
-    if (g) {
-      // Graph mode: the extension is a pure multiplier on top of the site's
-      // own element.volume, which we never write.
-      smooth(g.gain.gain, clampNum(SETTINGS.volume, 0, MAX_GAIN));
-      smooth(g.filter.gain, SETTINGS.bass ? SETTINGS.bassDb : 0);
-    } else if (SETTINGS.volume <= 0.0001) {
-      // Extension "mute" while the graph can't be engaged (suspended context,
-      // bind failed): fall back to the element's native volume so mute holds.
-      try { if (el.volume !== 0) el.volume = 0; } catch (_) {}
+    if (!g) {
+      if (SETTINGS.volume <= 0.0001) {
+        // Extension "mute" while the graph can't be engaged (suspended
+        // context, bind failed): fall back to the element's native volume
+        // so mute holds.
+        try { if (el.volume !== 0) el.volume = 0; } catch (_) {}
+      }
+      // Otherwise the element is unbound at ×1: the site owns element.volume
+      // completely and we leave it untouched.
+      return;
     }
-    // Otherwise the element is unbound at ×1: the site owns element.volume
-    // completely and we leave it untouched.
+    smooth(g.gain.gain, clampNum(SETTINGS.volume, 0, MAX_GAIN));
+    smooth(g.filter.gain, SETTINGS.bass ? SETTINGS.bassDb : 0);
+    g.eq.forEach((f, i) => smooth(f.gain, SETTINGS.eqOn ? (SETTINGS.eq[i] || 0) : 0));
+    if (SETTINGS.noise.on) {
+      const t = clampNum(SETTINGS.noise.strength, 0, 100) / 100;
+      smooth(g.hp.frequency, NOISE.HP_MIN + (NOISE.HP_MAX - NOISE.HP_MIN) * t);
+      smooth(g.hiss.frequency, NOISE.HISS_FREQ);
+      smooth(g.hiss.gain, -NOISE.HISS_MAX_DB * t);
+    } else {
+      smooth(g.hp.frequency, 5);          // below audio: fully transparent
+      smooth(g.hiss.frequency, 20000);
+      smooth(g.hiss.gain, 0);
+    }
   }
 
   function applyAll() {
@@ -186,7 +282,10 @@
     if (!g) return;
     try {
       g.src.disconnect();
+      g.hp.disconnect();
+      g.hiss.disconnect();
       g.filter.disconnect();
+      for (const f of g.eq) f.disconnect();
       g.gain.disconnect();
     } catch (_) {}
     graphs.delete(el);
@@ -238,7 +337,7 @@
   document.addEventListener('play', scheduleRescan, { passive: true });
 
   // Retry deferred graph binds once the context is allowed to run, and keep
-  // graph gains in sync with the current settings.
+  // graph values in sync with the current settings.
   setInterval(() => {
     if (audioCtx && audioCtx.state === 'suspended') {
       void audioCtx.resume().catch(() => {});
@@ -257,6 +356,17 @@
     if (typeof msg.volume === 'number') SETTINGS.volume = clampNum(msg.volume, 0, MAX_GAIN);
     if (typeof msg.bass === 'boolean') SETTINGS.bass = msg.bass;
     if (typeof msg.bassDb === 'number') SETTINGS.bassDb = clampNum(msg.bassDb, 0, BASS_MAX_DB);
+    if (typeof msg.eqOn === 'boolean') SETTINGS.eqOn = msg.eqOn;
+    if (Array.isArray(msg.eq)) {
+      SETTINGS.eq = BANDS.map((_, i) =>
+        clampNum(Number(msg.eq[i]) || 0, -CFG.EQ_MAX_DB, CFG.EQ_MAX_DB));
+    }
+    if (msg.noise && typeof msg.noise === 'object') {
+      SETTINGS.noise = {
+        on: !!msg.noise.on,
+        strength: clampNum(Number(msg.noise.strength) || 0, 0, 100),
+      };
+    }
     persist();
   }
 
@@ -265,6 +375,12 @@
       volume: Math.round(SETTINGS.volume * 1000) / 1000,
       bass: !!SETTINGS.bass,
       bassDb: Math.round(SETTINGS.bassDb * 10) / 10,
+      eqOn: !!SETTINGS.eqOn,
+      eq: SETTINGS.eq.map((db) => Math.round(db * 10) / 10),
+      noise: {
+        on: !!SETTINGS.noise.on,
+        strength: Math.round(SETTINGS.noise.strength),
+      },
       media: known.size,
       graphs: graphs.size,
       ctx: audioCtx ? audioCtx.state : 'none',

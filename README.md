@@ -1,8 +1,9 @@
 # Volume+
 
 A clean, minimal tab-volume extension for Chrome / Edge (Manifest V3) — 0–600%,
-native-quality audio, a real Bass Boost (low-shelf filter), and — critically —
-**fullscreen that is never broken**.
+native-quality audio, a real Bass Boost (low-shelf filter), a **6-band
+graphic equalizer**, **noise reduction**, and — critically — **fullscreen that
+is never broken**.
 
 Inspired by the gap left by Volume Master (which breaks fullscreen on sites like
 YouTube): Volume+ wraps only the *audio output* of media elements. It never
@@ -21,6 +22,18 @@ shortcuts stay fully under the site's control: Volume+ applies a gain multiplier
   snapping below the browser's normal minimum.
 - **Bass Boost** — a proper `BiquadFilterNode` low-shelf at 180 Hz, with an
   on/off toggle and a 0–12 dB intensity control. Not fake overall-amplification.
+- **Equalizer tab** — six vertical faders (60 Hz, 170 Hz, 350 Hz, 1 kHz,
+  3.5 kHz, 10 kHz; shelves on the ends, peaking in between), −12…+12 dB per
+  band, a master on/off toggle and a one-click Flatten. Tap a band's dB chip to
+  zero just that band.
+- **Reduce noise (Settings tab)** — a two-stage filter pair: a high-pass
+  (45–180 Hz) that trims rumble/hum/handling noise, plus a de-hiss high-shelf
+  (up to −9 dB above 6.5 kHz). One 0–100 % strength dial.
+- **Snapping slider** — the volume slider stops on every 10 % (with a tick
+  ruler), and a magnetic stop makes "close to 100 %" settle exactly on 100, so
+  it's never a fight to get back to "normal" after raising it. Double-click the
+  slider (or click the 100 label) to jump straight to 100 %. Arrows step 10 %;
+  hold Shift with the arrows for 1 % fine steps.
 - **Literal boost**: 100% = ×1, 600% = ×6 (+15.6 dB) on top of the site volume.
   No limiter or compressor is inserted, so the boost is exactly as loud as it
   says on the label. At the extreme end of the range audio can exceed full
@@ -38,8 +51,9 @@ shortcuts stay fully under the site's control: Volume+ applies a gain multiplier
 Popup (popup/)  ──chrome.tabs.sendMessage──►  Content script engine (content/content.js)
                                                │
                                                ├─ element volume = the SITE's own volume (never touched)
-                                               ├─ any volume ≠ 100%, or Bass: Web Audio graph
-                                               │    media element → lowshelf → gain
+                                               ├─ any boost/filter: Web Audio graph
+                                               │    media element → highpass → de-hiss shelf
+                                               │    → bass lowshelf → EQ ×6 → gain
                                                │    → speakers   (gain = ×0–×6 on top of site volume)
                                                └─ settings persisted per host (chrome.storage.local)
 ```
@@ -84,6 +98,10 @@ npm i puppeteer-core
 node automated.mjs
 ```
 
+For a quick UI-only check without a browser install, open `test/ui-smoke.html`
+(regenerate it after popup changes with `node tools/build-smoke.mjs`) — it
+inlines the popup and asserts tabs, snapping, EQ and noise-reduction behavior.
+
 This launches a real Chromium with the extension loaded, drives the actual popup,
 and asserts: gain control on top of the site volume, Bass Boost, **fullscreen
 enter / exit / re-enter while controlled**, the site's own volume never being
@@ -107,10 +125,12 @@ elements a page exposes and whether the engine bound them; pass any URL.
 | Path | Purpose |
 | --- | --- |
 | `manifest.json` | MV3 manifest (permissions: `storage`, `scripting`) |
+| `shared/audio-config.js` | EQ band frequencies + noise params, shared by UI & engine |
 | `content/content.js` | Audio engine: binding, graphs, observer, persistence |
-| `popup/popup.html/css/js` | The popup UI |
+| `popup/popup.html/css/js` | The popup UI (Volume / Equalizer / Settings tabs) |
 | `background/service-worker.js` | Minimal placeholder worker |
 | `test/harness.html` | Local tone-video + fullscreen test page |
+| `test/ui-smoke.html` | Self-contained popup UI smoke test (open in any browser) |
 | `test/automated.mjs` | End-to-end browser automation |
 | `test/youtube.mjs` | Live YouTube fullscreen verification |
 | `test/probe.mjs` | Any-site engine/binding probe |
