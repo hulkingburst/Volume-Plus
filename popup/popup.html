@@ -70,6 +70,8 @@
           <button class="link" id="eqFlatten" type="button">Flatten</button>
         </div>
 
+        <div class="presets" id="eqPresets" role="group" aria-label="Equalizer presets"><!-- chips built by popup.js --></div>
+
         <div class="eq" id="eq"><!-- bands built by popup.js --></div>
         <div class="card-hint">Drag a fader · tap its dB value to zero the band</div>
       </section>
@@ -86,13 +88,14 @@
           <span class="card-name">Reduce noise</span>
           <span class="card-val" id="noiseVal">50%</span>
         </div>
-        <input type="range" id="noiseSlider" class="slider sub" min="0" max="100" step="1" value="50"
-               aria-label="Noise reduction strength" disabled>
+        <input type="range" id="noiseSlider" class="slider sub" min="0" max="80" step="1" value="50"
+               aria-label="Noise reduction strength (0–80%)" disabled>
         <div class="card-hint">High-pass + de-hiss shelf — trims rumble &amp; hiss</div>
       </section>
 
       <section class="card info">
         <div class="row"><span>Audio sources</span><span id="engine">—</span></div>
+        <div class="row"><span>Boost engine</span><span id="engineRow">—</span></div>
         <div class="row"><span>Slider steps</span><span>10% · Shift+↑↓ for 1%</span></div>
       </section>
 

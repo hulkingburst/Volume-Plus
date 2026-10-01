@@ -24,20 +24,30 @@ shortcuts stay fully under the site's control: Volume+ applies a gain multiplier
   on/off toggle and a 0–12 dB intensity control. Not fake overall-amplification.
 - **Equalizer tab** — six vertical faders (60 Hz, 170 Hz, 350 Hz, 1 kHz,
   3.5 kHz, 10 kHz; shelves on the ends, peaking in between), −12…+12 dB per
-  band, a master on/off toggle and a one-click Flatten. Tap a band's dB chip to
-  zero just that band.
-- **Reduce noise (Settings tab)** — a two-stage filter pair: a high-pass
-  (45–180 Hz) that trims rumble/hum/handling noise, plus a de-hiss high-shelf
-  (up to −9 dB above 6.5 kHz). One 0–100 % strength dial.
+  band, a master on/off toggle, a one-click Flatten, and **one-tap presets**
+  (Flat, Bass Boost, Vocal, Treble, Rock, Pop, Loudness — the active chip is
+  highlighted and Flatten releases it). Tap a band's dB chip to zero just that
+  band.
+- **Reduce noise (Settings tab)** — a three-stage filter chain: a high-pass
+  (45–320 Hz) that trims rumble/hum/handling noise, a narrow dynamic band-stop
+  parked on the hiss band, and a de-hiss high-shelf (up to −18 dB above
+  6.5 kHz). One 0–80 % strength dial (past ~80 % the high-pass would start
+  eating voices, so the dial stops at the useful ceiling instead of lying).
+- **Limiter-based loudness, not raw clipping** — boosting above 100 % feeds a
+  perceptually scaled pre-gain (P^(2/3), so each +10 % *sounds* like a real
+  step) into a soft-knee DynamicsCompressor limiter (−10 dB threshold, 12:1,
+  3 ms attack) with gentle make-up gain. The limiter turns headroom into dense,
+  genuinely louder output instead of cracked peak clipping — 200 % sounds
+  about twice as loud and stays clean.
 - **Snapping slider** — the volume slider stops on every 10 % (with a tick
   ruler), and a magnetic stop makes "close to 100 %" settle exactly on 100, so
   it's never a fight to get back to "normal" after raising it. Double-click the
   slider (or click the 100 label) to jump straight to 100 %. Arrows step 10 %;
   hold Shift with the arrows for 1 % fine steps.
-- **Literal boost**: 100% = ×1, 600% = ×6 (+15.6 dB) on top of the site volume.
-  No limiter or compressor is inserted, so the boost is exactly as loud as it
-  says on the label. At the extreme end of the range audio can exceed full
-  scale and clip — that distortion at 6× is expected and normal.
+- **Literal boost**: 100% = ×1, 600% = ×6 on top of the site volume. Above
+  100 % a soft-knee limiter (plus perceptual pre-gain scaling) converts the
+  extra headroom into real loudness; brief peaks may still graze full scale at
+  extreme settings.
 - **Robust engine**: dynamically created/replaced media elements are picked up by
   a throttled `MutationObserver` + `play` events; per-host settings survive
   reloads/navigation; multiple media elements are all handled; iframes included.
@@ -52,9 +62,10 @@ Popup (popup/)  ──chrome.tabs.sendMessage──►  Content script engine (c
                                                │
                                                ├─ element volume = the SITE's own volume (never touched)
                                                ├─ any boost/filter: Web Audio graph
-                                               │    media element → highpass → de-hiss shelf
-                                               │    → bass lowshelf → EQ ×6 → gain
-                                               │    → speakers   (gain = ×0–×6 on top of site volume)
+                                               │    media element → highpass → dynamic notch
+                                               │    → de-hiss shelf → EQ ×6 → bass lowshelf
+                                               │    → pre-gain → limiter → make-up → speakers
+                                               │    (boost = perceptual pre-gain through a soft-knee limiter)
                                                └─ settings persisted per host (chrome.storage.local)
 ```
 

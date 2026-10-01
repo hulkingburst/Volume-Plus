@@ -128,6 +128,21 @@ ${js}
       b3btn.click();
       ok('tapping chip zeroes the band', b3btn.textContent === '0 dB');
 
+      // presets: chips render, one tap loads the curve + marks the chip
+      const chips = d.querySelectorAll('#eqPresets .preset');
+      ok('preset chips rendered', chips.length >= 6, String(chips.length));
+      const vocal = Array.from(chips).find((b) => b.textContent === 'Vocal');
+      vocal.click();
+      ok('Vocal preset sets the 1 kHz band to +5 dB',
+        d.querySelectorAll('#eq .band .db')[3].textContent === '+5 dB',
+        d.querySelectorAll('#eq .band .db')[3].textContent);
+      ok('Vocal preset sets the 3.5 kHz band to +4 dB',
+        d.querySelectorAll('#eq .band .db')[4].textContent === '+4 dB',
+        d.querySelectorAll('#eq .band .db')[4].textContent);
+      ok('active preset chip highlighted', vocal.classList.contains('is-active'));
+      d.getElementById('eqFlatten').click();
+      ok('Flatten clears the active preset', !vocal.classList.contains('is-active'));
+
       d.getElementById('eqBtn').click();
       ok('EQ off zeroes chips', Array.from(d.querySelectorAll('#eq .db')).every((b) => b.textContent === '0 dB'));
       ok('EQ off dims faders', d.getElementById('eq').classList.contains('is-off'));

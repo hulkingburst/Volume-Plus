@@ -264,13 +264,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.card-hint {
-  color: var(--muted);
-  font-size: 10.5px;
-  margin-top: 6px;
-}
-
-.card.info { padding: 10px 12px; }
+.card-name + .link { margin-left: auto; }
 
 .row {
   display: flex;
@@ -282,6 +276,14 @@ body {
 }
 
 .row span:last-child { color: var(--text); text-align: right; }
+
+.card.info { padding: 10px 12px; }
+
+.card-hint {
+  color: var(--muted);
+  font-size: 10.5px;
+  margin-top: 6px;
+}
 
 /* ---------------- switches ---------------- */
 
@@ -318,27 +320,33 @@ body {
 
 /* ---------------- equalizer ---------------- */
 
+/*
+ * Six equal columns. The band (NOT the slider) owns the fixed travel height,
+ * and the fader is absolutely centered inside it — so a thumb visually
+ * overflowing its column can never push or stretch its neighbors (the
+ * "dials push each other over and stack" bug).
+ */
 .eq {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 2px;
   margin-top: 12px;
 }
 
 .band {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
+  position: relative;
+  height: 110px;   /* the fader's travel box lives here, once */
 }
 
-/* vertical fader: width = rail, height = travel */
 .band .slider {
-  writing-mode: vertical-lr;
-  direction: rtl;
+  position: absolute;
+  left: 50%;
+  top: 0;
   width: 26px;
   height: 110px;
-  margin: 0 auto;
+  margin: 0 0 0 -13px;
+  writing-mode: vertical-lr;
+  direction: rtl;
 }
 
 .band .slider::-webkit-slider-runnable-track {
@@ -361,6 +369,10 @@ body {
 }
 
 .band .db {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: -16px;
   border: none;
   background: rgba(255, 255, 255, 0.06);
   color: var(--muted);
@@ -375,22 +387,52 @@ body {
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.band .db:hover { background: rgba(255, 255, 255, 0.12); color: var(--text); }
-
-.band .db.is-nonzero {
-  background: rgba(143, 123, 255, 0.18);
-  color: var(--accent2);
-}
-
 .band .hz {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: -16px;
   color: var(--muted);
   font-size: 9.5px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* EQ master toggle off: faders dimmed + inert */
 .eq.is-off .slider { opacity: 0.35; pointer-events: none; }
 .eq.is-off .hz { opacity: 0.5; }
+
+/* one-tap preset chips */
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.presets .preset {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 99px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.presets .preset:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+
+.presets .preset.is-active {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-color: transparent;
+  color: #fff;
+}
+
+.eq.is-off ~ .presets .preset,
+.presets .preset:disabled { opacity: 0.45; pointer-events: none; }
 
 /* ---------------- footer ---------------- */
 

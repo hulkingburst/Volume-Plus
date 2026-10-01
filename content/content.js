@@ -11,9 +11,10 @@
  *    mute), and the extension acts as a pure multiplier on top of it through
  *    a Web Audio graph. 100% = ×1.
  *  - One AudioContext per frame, one graph per media element, all kept local.
- *    Graph: source → highpass(noise) → lowshelf(noise hiss) → bass lowshelf
- *    → EQ × 6 → gain → speakers. Noise/EQ stages sit at neutral values when
- *    off, so they cost nothing audible.
+ *    Graph: source → highpass → dynamic notch → de-hiss shelf (noise) →
+ *    EQ × 6 → bass lowshelf → pre-gain → limiter → make-up → speakers.
+ *    Noise/EQ stages sit at neutral values when off, so they cost nothing
+ *    audible.
  *  - Dynamically created/replaced/paused media elements are reconciled via a
  *    (throttled) MutationObserver + play events.
  *  - Settings are persisted per host so reloads and navigations keep working.
@@ -34,7 +35,7 @@
       { freq: 3500, type: 'peaking', label: '3.5', unit: 'kHz', q: 1.1 },
       { freq: 10000, type: 'highshelf', label: '10', unit: 'kHz' },
     ],
-    NOISE: { DEF: 50, HP_MIN: 45, HP_MAX: 180, HISS_FREQ: 6500, HISS_MAX_DB: 9 },
+    NOISE: { DEF: 50, MAX: 80, HP_MIN: 45, HP_MAX: 320, NOTCH_Q: 3, HISS_FREQ: 6500, HISS_MAX_DB: 18 },
   };
 
   const MAX_GAIN    = CFG.MAX_GAIN;    // 600 %
@@ -46,6 +47,14 @@
 
   const clampNum = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+  /*
+   * Perceptual pre-gain. The popup's P% maps to P^(2/3) gain because the ear
+   * is logarithmic: a raw ×2 gain does not SOUND twice as loud, it sounds like
+   * "the same thing but noisier". P^(2/3) keeps the perceived jump linear —
+   * and the limiter below turns that gain into real, clean loudness.
+   */
+  const boostPre = (v) => (v <= 1.0001 ? v : Math.pow(v, 2 / 3));
+
   const SETTINGS = {
     volume: 1,
     bass: false,
@@ -56,7 +65,7 @@
   };
 
   let audioCtx  = null;
-  const graphs  = new Map(); // element -> { src, hp, hiss, filter, eq[], gain }
+  const graphs  = new Map(); // element -> { src, hp, notch, hiss, filter, eq[], preGain, comp, outGain }
   let known     = new Set(); // media elements currently in the DOM
   let pendingResume = false;
 
@@ -162,7 +171,15 @@
       hp.type = 'highpass';
       hp.Q.value = 0.707;
 
-      // Noise reduction stage 2: high-shelf cut (hiss, sibilance).
+      // Noise reduction stage 2: a narrow dynamic band-stop parked on the
+      // hiss band (a broadband gate would eat voices; a narrow dip does not).
+      // Neutral 'peaking' at 0 dB while noise reduction is off.
+      const notch = ctx.createBiquadFilter();
+      notch.type = 'peaking';
+      notch.frequency.setValueAtTime(NOISE.HISS_FREQ, ctx.currentTime);
+      notch.Q.setValueAtTime(NOISE.NOTCH_Q, ctx.currentTime);
+
+      // Noise reduction stage 3: high-shelf cut (hiss, sibilance).
       const hiss = ctx.createBiquadFilter();
       hiss.type = 'highshelf';
 
@@ -183,22 +200,38 @@
         return f;
       });
 
-      // Multiplier ON TOP of the element's own volume: the site keeps control
-      // of element.volume (its slider/shortcuts), we never touch it. 100% here
-      // = ×1 (site volume as-is), 600% = ×6 (+15.6 dB). Exceeding full scale
-      // clips naturally — distortion at the top of the range is expected, and
-      // no limiter/compressor is inserted to soften it.
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(clampNum(SETTINGS.volume, 0, MAX_GAIN), ctx.currentTime);
+      // Loudness chain, ON TOP of the element's own volume (the site keeps
+      // control of element.volume; we never touch it). Boosting >100% is built
+      // as a perceptually scaled pre-gain feeding a fast soft-knee limiter
+      // with modest make-up: the limiter turns headroom into real, dense
+      // loudness instead of cracked peak clipping, so 200% genuinely sounds
+      // about twice as loud and stays clean.
+      const preGain = ctx.createGain();
+      preGain.gain.setValueAtTime(boostPre(SETTINGS.volume), ctx.currentTime);
+
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.setValueAtTime(-10, ctx.currentTime); // catch peaks just under full scale
+      comp.knee.setValueAtTime(30, ctx.currentTime);       // soft knee: inaudible engagement
+      comp.ratio.setValueAtTime(12, ctx.currentTime);      // limit, don't crush
+      comp.attack.setValueAtTime(0.003, ctx.currentTime);
+      comp.release.setValueAtTime(0.25, ctx.currentTime);
+
+      const outGain = ctx.createGain(); // gentle make-up while boosting
+      outGain.gain.setValueAtTime(
+        SETTINGS.volume > 1.0001
+          ? Math.min(2, 0.85 + 0.15 * Math.log2(SETTINGS.volume))
+          : 1,
+        ctx.currentTime,
+      );
 
       let prev = src;
-      for (const node of [hp, hiss, filter, ...eq, gain]) {
+      for (const node of [hp, notch, hiss, ...eq, filter, preGain, comp, outGain]) {
         prev.connect(node);
         prev = node;
       }
-      gain.connect(ctx.destination);
+      outGain.connect(ctx.destination);
 
-      const graph = { src, hp, hiss, filter, eq, gain };
+      const graph = { src, hp, notch, hiss, filter, eq, preGain, comp, outGain };
       graphs.set(el, graph);
       applyTo(el);
       return graph;
@@ -225,16 +258,25 @@
       // completely and we leave it untouched.
       return;
     }
-    smooth(g.gain.gain, clampNum(SETTINGS.volume, 0, MAX_GAIN));
+    smooth(g.preGain.gain, boostPre(SETTINGS.volume));
+    smooth(g.outGain.gain,
+      SETTINGS.volume > 1.0001
+        ? Math.min(2, 0.85 + 0.15 * Math.log2(SETTINGS.volume))
+        : 1);
     smooth(g.filter.gain, SETTINGS.bass ? SETTINGS.bassDb : 0);
     g.eq.forEach((f, i) => smooth(f.gain, SETTINGS.eqOn ? (SETTINGS.eq[i] || 0) : 0));
     if (SETTINGS.noise.on) {
-      const t = clampNum(SETTINGS.noise.strength, 0, 100) / 100;
+      // Strength is capped at NOISE.MAX: beyond it the high-pass starts eating
+      // voices, so more travel would only sound worse, not cleaner.
+      const t = clampNum(SETTINGS.noise.strength, 0, NOISE.MAX) / NOISE.MAX;
       smooth(g.hp.frequency, NOISE.HP_MIN + (NOISE.HP_MAX - NOISE.HP_MIN) * t);
+      g.notch.type = 'bandstop';           // engage the dynamic hiss band-stop
+      smooth(g.notch.frequency, NOISE.HISS_FREQ);
       smooth(g.hiss.frequency, NOISE.HISS_FREQ);
       smooth(g.hiss.gain, -NOISE.HISS_MAX_DB * t);
     } else {
-      smooth(g.hp.frequency, 5);          // below audio: fully transparent
+      smooth(g.hp.frequency, 5);           // below audio: fully transparent
+      g.notch.type = 'peaking';            // neutral band: no dip when off
       smooth(g.hiss.frequency, 20000);
       smooth(g.hiss.gain, 0);
     }
@@ -283,10 +325,13 @@
     try {
       g.src.disconnect();
       g.hp.disconnect();
+      g.notch.disconnect();
       g.hiss.disconnect();
       g.filter.disconnect();
       for (const f of g.eq) f.disconnect();
-      g.gain.disconnect();
+      g.preGain.disconnect();
+      g.comp.disconnect();
+      g.outGain.disconnect();
     } catch (_) {}
     graphs.delete(el);
   }
@@ -384,6 +429,7 @@
       media: known.size,
       graphs: graphs.size,
       ctx: audioCtx ? audioCtx.state : 'none',
+      state: SETTINGS.volume > 1.0001 ? 'limiter' : 'transparent',
     };
   }
 

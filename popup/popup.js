@@ -4,8 +4,9 @@
  * Tabs: Volume / Equalizer / Settings. Volume slider: 10 % detents with a
  * magnetic 100 % stop (drag near 100 % and it clings, so the exact spot is
  * trivial to hit); hold Shift with the arrows for 1 % precision. The EQ is
- * six vertical faders (−12 … +12 dB per band); Settings holds Reduce noise.
- * Everything is pushed to the content-script engine with a short debounce.
+ * six vertical faders (−12 … +12 dB per band) with one-tap presets, and
+ * Settings holds Reduce noise. Everything is pushed to the content-script
+ * engine with a short debounce.
  */
 (() => {
   'use strict';
@@ -19,8 +20,14 @@
       { freq: 3500, type: 'peaking', label: '3.5', unit: 'kHz', q: 1.1 },
       { freq: 10000, type: 'highshelf', label: '10', unit: 'kHz' },
     ],
+    PRESETS: [
+      { id: 'flat', name: 'Flat', eq: [0, 0, 0, 0, 0, 0] },
+    ],
+    NOISE: { DEF: 50, MAX: 80 },
   };
   const BANDS = CFG.BANDS;
+  const PRESETS = CFG.PRESETS || [{ id: 'flat', name: 'Flat', eq: [0, 0, 0, 0, 0, 0] }];
+  const NOISE_MAX = CFG.NOISE.MAX || 80;
 
   const DEFAULTS = {
     volume: 1,
@@ -30,7 +37,6 @@
     noise: { on: false, strength: 50 },
   };
   const BASS_MAX = 12;
-  const NOISE_MAX = 100;
 
   // --- snapping constants -------------------------------------------------
   const VMIN = 0, VMAX = 600;      // slider range, percent
@@ -53,6 +59,7 @@
     noiseSlider: document.getElementById('noiseSlider'),
     noiseVal: document.getElementById('noiseVal'),
     engine: document.getElementById('engine'),
+    engineRow: document.getElementById('engineRow'),
     host: document.getElementById('host'),
     reset: document.getElementById('reset'),
   };
@@ -74,6 +81,7 @@
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const pctOf = (v) => Math.round(clamp(v, 0, 6) * 100);
+  const eqEq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
   function hostname(url) {
     try { return new URL(url).hostname; } catch (_) { return ''; }
@@ -190,7 +198,7 @@
       hz.className = 'hz';
       hz.textContent = `${b.label} ${b.unit}`;
 
-      band.append(dbBtn, input, hz);
+      band.append(input, dbBtn, hz);  // input first: .db chip uses top:-16px (CSS sibling order)
       els.eqWrap.appendChild(band);
       bandRefs.push({ input, dbBtn, hz });
     });
@@ -206,6 +214,41 @@
   }
 
   buildEq();
+
+  /* Presets: one-tap curve chips. The active chip is marked by comparing the
+   * live curve (after the off-toggle zeros / restores it) against each preset. */
+  const presetBtns = [];
+  function buildPresets() {
+    const wrap = document.getElementById('eqPresets');
+    if (!wrap) return;
+    wrap.textContent = '';
+    presetBtns.length = 0;
+    PRESETS.forEach((p) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'preset';
+      b.textContent = p.name;
+      b.title = `Load the ${p.name} curve`;
+      b.addEventListener('click', () => {
+        state.eq = p.eq.slice();
+        if (!state.eqOn) {
+          state.eqOn = true;   // picking a preset turns the EQ on
+          savedEq = null;
+        }
+        render();
+        flushPush();
+      });
+      wrap.appendChild(b);
+      presetBtns.push({ btn: b, eq: p.eq, name: p.name });
+    });
+  }
+  buildPresets();
+
+  function activePresetName() {
+    if (!state.eqOn) return null;
+    for (const p of presetBtns) if (eqEq(state.eq, p.eq)) return p.name;
+    return null;
+  }
 
   els.eqBtn.addEventListener('click', () => {
     if (state.eqOn) {
@@ -260,9 +303,12 @@
       dbBtn.textContent = `${db > 0 ? '+' : ''}${db} dB`;
       dbBtn.classList.toggle('is-nonzero', db !== 0);
     }
+    const active = activePresetName();
+    for (const p of presetBtns) p.btn.classList.toggle('is-active', p.name === active);
 
     els.noiseBtn.setAttribute('aria-checked', String(state.noise.on));
     els.noiseSlider.disabled = !state.noise.on;
+    els.noiseSlider.max = String(NOISE_MAX);
     els.noiseSlider.value = String(state.noise.strength);
     els.noiseSlider.style.setProperty('--fill', (state.noise.strength / NOISE_MAX) * 100 + '%');
     els.noiseVal.textContent = `${state.noise.strength}%`;
@@ -270,6 +316,11 @@
     const src = state.media === 1 ? '1 audio source' : `${state.media} audio sources`;
     const mode = state.graphs > 0 ? 'Web Audio' : 'native';
     els.engine.textContent = state.media > 0 ? `${src} · ${mode}` : 'no media on this page yet';
+    if (els.engineRow) {
+      els.engineRow.textContent = state.graphs > 0
+        ? (state.volume > 1.0001 ? 'Limiter (clean boost)' : 'Web Audio (transparent)')
+        : '—';
+    }
   }
 
   function reflectSnapshot(r) {
@@ -299,10 +350,9 @@
    * ------------------------------------------------------------------ *
    * The <input type=range> keeps step=10 (keyboard and programmatic changes
    * stay on the grid). While dragging we re-map the raw pointer position:
-   * round to the nearest detent, and if the raw position sits within
-   * MAGNET_RADIUS_PX of the 100 % mark it clings to exactly 100 % — so "a
-   * little above 100 %" never strands you at 110 % and landing on 100 is
-   * effortless.
+   * round to the nearest detent, and if the raw position sits within the
+   * magnet band of the 100 % mark it clings to exactly 100 % — so "a little
+   * above 100 %" never strands you at 110 % and landing on 100 is effortless.
    */
   function snapFromClientX(clientX) {
     const rect = els.slider.getBoundingClientRect();

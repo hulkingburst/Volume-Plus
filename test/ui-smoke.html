@@ -276,13 +276,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.card-hint {
-  color: var(--muted);
-  font-size: 10.5px;
-  margin-top: 6px;
-}
-
-.card.info { padding: 10px 12px; }
+.card-name + .link { margin-left: auto; }
 
 .row {
   display: flex;
@@ -294,6 +288,14 @@ body {
 }
 
 .row span:last-child { color: var(--text); text-align: right; }
+
+.card.info { padding: 10px 12px; }
+
+.card-hint {
+  color: var(--muted);
+  font-size: 10.5px;
+  margin-top: 6px;
+}
 
 /* ---------------- switches ---------------- */
 
@@ -330,27 +332,33 @@ body {
 
 /* ---------------- equalizer ---------------- */
 
+/*
+ * Six equal columns. The band (NOT the slider) owns the fixed travel height,
+ * and the fader is absolutely centered inside it — so a thumb visually
+ * overflowing its column can never push or stretch its neighbors (the
+ * "dials push each other over and stack" bug).
+ */
 .eq {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 2px;
   margin-top: 12px;
 }
 
 .band {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
+  position: relative;
+  height: 110px;   /* the fader's travel box lives here, once */
 }
 
-/* vertical fader: width = rail, height = travel */
 .band .slider {
-  writing-mode: vertical-lr;
-  direction: rtl;
+  position: absolute;
+  left: 50%;
+  top: 0;
   width: 26px;
   height: 110px;
-  margin: 0 auto;
+  margin: 0 0 0 -13px;
+  writing-mode: vertical-lr;
+  direction: rtl;
 }
 
 .band .slider::-webkit-slider-runnable-track {
@@ -373,6 +381,10 @@ body {
 }
 
 .band .db {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: -16px;
   border: none;
   background: rgba(255, 255, 255, 0.06);
   color: var(--muted);
@@ -387,22 +399,52 @@ body {
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.band .db:hover { background: rgba(255, 255, 255, 0.12); color: var(--text); }
-
-.band .db.is-nonzero {
-  background: rgba(143, 123, 255, 0.18);
-  color: var(--accent2);
-}
-
 .band .hz {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: -16px;
   color: var(--muted);
   font-size: 9.5px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* EQ master toggle off: faders dimmed + inert */
 .eq.is-off .slider { opacity: 0.35; pointer-events: none; }
 .eq.is-off .hz { opacity: 0.5; }
+
+/* one-tap preset chips */
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.presets .preset {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 99px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.presets .preset:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+
+.presets .preset.is-active {
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  border-color: transparent;
+  color: #fff;
+}
+
+.eq.is-off ~ .presets .preset,
+.presets .preset:disabled { opacity: 0.45; pointer-events: none; }
 
 /* ---------------- footer ---------------- */
 
@@ -506,6 +548,8 @@ body {
           <button class="link" id="eqFlatten" type="button">Flatten</button>
         </div>
 
+        <div class="presets" id="eqPresets" role="group" aria-label="Equalizer presets"><!-- chips built by popup.js --></div>
+
         <div class="eq" id="eq"><!-- bands built by popup.js --></div>
         <div class="card-hint">Drag a fader · tap its dB value to zero the band</div>
       </section>
@@ -522,13 +566,14 @@ body {
           <span class="card-name">Reduce noise</span>
           <span class="card-val" id="noiseVal">50%</span>
         </div>
-        <input type="range" id="noiseSlider" class="slider sub" min="0" max="100" step="1" value="50"
-               aria-label="Noise reduction strength" disabled>
+        <input type="range" id="noiseSlider" class="slider sub" min="0" max="80" step="1" value="50"
+               aria-label="Noise reduction strength (0–80%)" disabled>
         <div class="card-hint">High-pass + de-hiss shelf — trims rumble &amp; hiss</div>
       </section>
 
       <section class="card info">
         <div class="row"><span>Audio sources</span><span id="engine">—</span></div>
+        <div class="row"><span>Boost engine</span><span id="engineRow">—</span></div>
         <div class="row"><span>Slider steps</span><span>10% · Shift+↑↓ for 1%</span></div>
       </section>
 
@@ -551,7 +596,7 @@ body {
  * Volume+ — shared audio configuration.
  *
  * Loaded as a classic script on BOTH sides:
- *   - popup/popup.html  (before popup.js)  → labels/ranges for the UI
+ *   - popup/popup.html  (before popup.js)  → labels/ranges/presets for the UI
  *   - content/content.js (via the manifest) → the real filter chain
  *
  * Keeping it in one place means the slider the user drags is always the filter
@@ -577,20 +622,41 @@ body {
   ];
 
   /*
-   * "Reduce noise" is a two-stage filter pair — no fake AI claim:
-   *   1. high-pass   → rumble, handling noise, mains hum, traffic thud
-   *   2. high-shelf cut (de-hiss) → tape/room hiss, sibilance, browser fan
-   * Strength (0–100 %) scales the cutoff frequency and the hiss cut.
+   * One-tap EQ presets (dB per band, same order as BANDS). The popup marks the
+   * active chip by comparing the live curve against these exact values.
+   */
+  const PRESETS = [
+    { id: 'flat',     name: 'Flat',      eq: [0, 0, 0, 0, 0, 0] },
+    { id: 'bass',     name: 'Bass Boost', eq: [8, 4, 0, 0, 0, 0] },
+    { id: 'vocal',    name: 'Vocal',     eq: [-3, -1, 2, 5, 4, 1] },
+    { id: 'treble',   name: 'Treble',    eq: [-2, -1, 0, 1, 4, 7] },
+    { id: 'rock',     name: 'Rock',      eq: [5, 3, -1, -1, 3, 5] },
+    { id: 'pop',      name: 'Pop',       eq: [-1, 1, 4, 4, 1, -1] },
+    { id: 'loudness', name: 'Loudness',  eq: [6, 3, 0, 0, 3, 6] },
+  ];
+
+  /*
+   * "Reduce noise" is a three-stage filter chain — no fake AI claim:
+   *   1. high-pass         → rumble, handling noise, mains hum, traffic thud
+   *   2. band-stop         → a narrow dynamic dip parked on the hiss band
+   *   3. high-shelf cut    → tape/room hiss, sibilance, browser fan
+   * Strength (0–100 %) scales the cutoff frequency and the cut depth.
+   *
+   * MAX caps how far the strength dial actually travels: past ~80 % the
+   * high-pass starts eating voices and everything just sounds underwater.
+   * The dial stops there instead of lying about "100 %".
    */
   const NOISE = {
     DEF: 50,
+    MAX: 80,           // useful ceiling for the strength slider
     HP_MIN: 45,        // Hz — ~transparent at 0 % strength
-    HP_MAX: 180,       // Hz — at 100 % strength
-    HISS_FREQ: 6500,   // Hz high-shelf center
-    HISS_MAX_DB: 9,    // dB cut at 100 % strength
+    HP_MAX: 320,       // Hz — at full strength (clearly audible de-rumble)
+    NOTCH_Q: 3,        // narrow band-stop on the hiss band
+    HISS_FREQ: 6500,   // Hz band-stop / high-shelf center
+    HISS_MAX_DB: 18,   // dB shelf cut at full strength
   };
 
-  root.VP_AUDIO = { MAX_GAIN, BASS_MAX_DB, BASS_FREQ, EQ_MAX_DB, BANDS, NOISE };
+  root.VP_AUDIO = { MAX_GAIN, BASS_MAX_DB, BASS_FREQ, EQ_MAX_DB, BANDS, NOISE, PRESETS };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -601,8 +667,9 @@ body {
  * Tabs: Volume / Equalizer / Settings. Volume slider: 10 % detents with a
  * magnetic 100 % stop (drag near 100 % and it clings, so the exact spot is
  * trivial to hit); hold Shift with the arrows for 1 % precision. The EQ is
- * six vertical faders (−12 … +12 dB per band); Settings holds Reduce noise.
- * Everything is pushed to the content-script engine with a short debounce.
+ * six vertical faders (−12 … +12 dB per band) with one-tap presets, and
+ * Settings holds Reduce noise. Everything is pushed to the content-script
+ * engine with a short debounce.
  */
 (() => {
   'use strict';
@@ -616,8 +683,14 @@ body {
       { freq: 3500, type: 'peaking', label: '3.5', unit: 'kHz', q: 1.1 },
       { freq: 10000, type: 'highshelf', label: '10', unit: 'kHz' },
     ],
+    PRESETS: [
+      { id: 'flat', name: 'Flat', eq: [0, 0, 0, 0, 0, 0] },
+    ],
+    NOISE: { DEF: 50, MAX: 80 },
   };
   const BANDS = CFG.BANDS;
+  const PRESETS = CFG.PRESETS || [{ id: 'flat', name: 'Flat', eq: [0, 0, 0, 0, 0, 0] }];
+  const NOISE_MAX = CFG.NOISE.MAX || 80;
 
   const DEFAULTS = {
     volume: 1,
@@ -627,7 +700,6 @@ body {
     noise: { on: false, strength: 50 },
   };
   const BASS_MAX = 12;
-  const NOISE_MAX = 100;
 
   // --- snapping constants -------------------------------------------------
   const VMIN = 0, VMAX = 600;      // slider range, percent
@@ -650,6 +722,7 @@ body {
     noiseSlider: document.getElementById('noiseSlider'),
     noiseVal: document.getElementById('noiseVal'),
     engine: document.getElementById('engine'),
+    engineRow: document.getElementById('engineRow'),
     host: document.getElementById('host'),
     reset: document.getElementById('reset'),
   };
@@ -671,6 +744,7 @@ body {
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const pctOf = (v) => Math.round(clamp(v, 0, 6) * 100);
+  const eqEq = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
   function hostname(url) {
     try { return new URL(url).hostname; } catch (_) { return ''; }
@@ -787,7 +861,7 @@ body {
       hz.className = 'hz';
       hz.textContent = `${b.label} ${b.unit}`;
 
-      band.append(dbBtn, input, hz);
+      band.append(input, dbBtn, hz);  // input first: .db chip uses top:-16px (CSS sibling order)
       els.eqWrap.appendChild(band);
       bandRefs.push({ input, dbBtn, hz });
     });
@@ -803,6 +877,41 @@ body {
   }
 
   buildEq();
+
+  /* Presets: one-tap curve chips. The active chip is marked by comparing the
+   * live curve (after the off-toggle zeros / restores it) against each preset. */
+  const presetBtns = [];
+  function buildPresets() {
+    const wrap = document.getElementById('eqPresets');
+    if (!wrap) return;
+    wrap.textContent = '';
+    presetBtns.length = 0;
+    PRESETS.forEach((p) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'preset';
+      b.textContent = p.name;
+      b.title = `Load the ${p.name} curve`;
+      b.addEventListener('click', () => {
+        state.eq = p.eq.slice();
+        if (!state.eqOn) {
+          state.eqOn = true;   // picking a preset turns the EQ on
+          savedEq = null;
+        }
+        render();
+        flushPush();
+      });
+      wrap.appendChild(b);
+      presetBtns.push({ btn: b, eq: p.eq, name: p.name });
+    });
+  }
+  buildPresets();
+
+  function activePresetName() {
+    if (!state.eqOn) return null;
+    for (const p of presetBtns) if (eqEq(state.eq, p.eq)) return p.name;
+    return null;
+  }
 
   els.eqBtn.addEventListener('click', () => {
     if (state.eqOn) {
@@ -857,9 +966,12 @@ body {
       dbBtn.textContent = `${db > 0 ? '+' : ''}${db} dB`;
       dbBtn.classList.toggle('is-nonzero', db !== 0);
     }
+    const active = activePresetName();
+    for (const p of presetBtns) p.btn.classList.toggle('is-active', p.name === active);
 
     els.noiseBtn.setAttribute('aria-checked', String(state.noise.on));
     els.noiseSlider.disabled = !state.noise.on;
+    els.noiseSlider.max = String(NOISE_MAX);
     els.noiseSlider.value = String(state.noise.strength);
     els.noiseSlider.style.setProperty('--fill', (state.noise.strength / NOISE_MAX) * 100 + '%');
     els.noiseVal.textContent = `${state.noise.strength}%`;
@@ -867,6 +979,11 @@ body {
     const src = state.media === 1 ? '1 audio source' : `${state.media} audio sources`;
     const mode = state.graphs > 0 ? 'Web Audio' : 'native';
     els.engine.textContent = state.media > 0 ? `${src} · ${mode}` : 'no media on this page yet';
+    if (els.engineRow) {
+      els.engineRow.textContent = state.graphs > 0
+        ? (state.volume > 1.0001 ? 'Limiter (clean boost)' : 'Web Audio (transparent)')
+        : '—';
+    }
   }
 
   function reflectSnapshot(r) {
@@ -896,10 +1013,9 @@ body {
    * ------------------------------------------------------------------ *
    * The <input type=range> keeps step=10 (keyboard and programmatic changes
    * stay on the grid). While dragging we re-map the raw pointer position:
-   * round to the nearest detent, and if the raw position sits within
-   * MAGNET_RADIUS_PX of the 100 % mark it clings to exactly 100 % — so "a
-   * little above 100 %" never strands you at 110 % and landing on 100 is
-   * effortless.
+   * round to the nearest detent, and if the raw position sits within the
+   * magnet band of the 100 % mark it clings to exactly 100 % — so "a little
+   * above 100 %" never strands you at 110 % and landing on 100 is effortless.
    */
   function snapFromClientX(clientX) {
     const rect = els.slider.getBoundingClientRect();
@@ -1148,6 +1264,21 @@ body {
       ok('nonzero chip highlighted', b3btn.classList.contains('is-nonzero'));
       b3btn.click();
       ok('tapping chip zeroes the band', b3btn.textContent === '0 dB');
+
+      // presets: chips render, one tap loads the curve + marks the chip
+      const chips = d.querySelectorAll('#eqPresets .preset');
+      ok('preset chips rendered', chips.length >= 6, String(chips.length));
+      const vocal = Array.from(chips).find((b) => b.textContent === 'Vocal');
+      vocal.click();
+      ok('Vocal preset sets the 1 kHz band to +5 dB',
+        d.querySelectorAll('#eq .band .db')[3].textContent === '+5 dB',
+        d.querySelectorAll('#eq .band .db')[3].textContent);
+      ok('Vocal preset sets the 3.5 kHz band to +4 dB',
+        d.querySelectorAll('#eq .band .db')[4].textContent === '+4 dB',
+        d.querySelectorAll('#eq .band .db')[4].textContent);
+      ok('active preset chip highlighted', vocal.classList.contains('is-active'));
+      d.getElementById('eqFlatten').click();
+      ok('Flatten clears the active preset', !vocal.classList.contains('is-active'));
 
       d.getElementById('eqBtn').click();
       ok('EQ off zeroes chips', Array.from(d.querySelectorAll('#eq .db')).every((b) => b.textContent === '0 dB'));

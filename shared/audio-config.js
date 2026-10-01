@@ -2,7 +2,7 @@
  * Volume+ — shared audio configuration.
  *
  * Loaded as a classic script on BOTH sides:
- *   - popup/popup.html  (before popup.js)  → labels/ranges for the UI
+ *   - popup/popup.html  (before popup.js)  → labels/ranges/presets for the UI
  *   - content/content.js (via the manifest) → the real filter chain
  *
  * Keeping it in one place means the slider the user drags is always the filter
@@ -28,18 +28,39 @@
   ];
 
   /*
-   * "Reduce noise" is a two-stage filter pair — no fake AI claim:
-   *   1. high-pass   → rumble, handling noise, mains hum, traffic thud
-   *   2. high-shelf cut (de-hiss) → tape/room hiss, sibilance, browser fan
-   * Strength (0–100 %) scales the cutoff frequency and the hiss cut.
+   * One-tap EQ presets (dB per band, same order as BANDS). The popup marks the
+   * active chip by comparing the live curve against these exact values.
+   */
+  const PRESETS = [
+    { id: 'flat',     name: 'Flat',      eq: [0, 0, 0, 0, 0, 0] },
+    { id: 'bass',     name: 'Bass Boost', eq: [8, 4, 0, 0, 0, 0] },
+    { id: 'vocal',    name: 'Vocal',     eq: [-3, -1, 2, 5, 4, 1] },
+    { id: 'treble',   name: 'Treble',    eq: [-2, -1, 0, 1, 4, 7] },
+    { id: 'rock',     name: 'Rock',      eq: [5, 3, -1, -1, 3, 5] },
+    { id: 'pop',      name: 'Pop',       eq: [-1, 1, 4, 4, 1, -1] },
+    { id: 'loudness', name: 'Loudness',  eq: [6, 3, 0, 0, 3, 6] },
+  ];
+
+  /*
+   * "Reduce noise" is a three-stage filter chain — no fake AI claim:
+   *   1. high-pass         → rumble, handling noise, mains hum, traffic thud
+   *   2. band-stop         → a narrow dynamic dip parked on the hiss band
+   *   3. high-shelf cut    → tape/room hiss, sibilance, browser fan
+   * Strength (0–100 %) scales the cutoff frequency and the cut depth.
+   *
+   * MAX caps how far the strength dial actually travels: past ~80 % the
+   * high-pass starts eating voices and everything just sounds underwater.
+   * The dial stops there instead of lying about "100 %".
    */
   const NOISE = {
     DEF: 50,
+    MAX: 80,           // useful ceiling for the strength slider
     HP_MIN: 45,        // Hz — ~transparent at 0 % strength
-    HP_MAX: 180,       // Hz — at 100 % strength
-    HISS_FREQ: 6500,   // Hz high-shelf center
-    HISS_MAX_DB: 9,    // dB cut at 100 % strength
+    HP_MAX: 320,       // Hz — at full strength (clearly audible de-rumble)
+    NOTCH_Q: 3,        // narrow band-stop on the hiss band
+    HISS_FREQ: 6500,   // Hz band-stop / high-shelf center
+    HISS_MAX_DB: 18,   // dB shelf cut at full strength
   };
 
-  root.VP_AUDIO = { MAX_GAIN, BASS_MAX_DB, BASS_FREQ, EQ_MAX_DB, BANDS, NOISE };
+  root.VP_AUDIO = { MAX_GAIN, BASS_MAX_DB, BASS_FREQ, EQ_MAX_DB, BANDS, NOISE, PRESETS };
 })(typeof window !== 'undefined' ? window : globalThis);
